@@ -179,11 +179,7 @@ def analyze_portfolio(client: TsetmcClient, holdings: list[Holding], workers: in
 
 
 def portfolio_risk(value_series: list[pd.Series]) -> dict[str, float | None]:
-    """Risk of the *current* holdings replayed over the last year of prices.
-
-    Prices are not adjusted for capital increases/dividends, so a raise inside the
-    window shows up as an artificial drop.
-    """
+    """Risk of the *current* holdings replayed over the last year of adjusted prices."""
     if not value_series:
         return {}
     frame = pd.concat(value_series, axis=1).sort_index().ffill().iloc[-TRADING_DAYS:]

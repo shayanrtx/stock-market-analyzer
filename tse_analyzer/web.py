@@ -331,8 +331,7 @@ def portfolio_page(cdn: TsetmcClient, path: Path) -> str:
                      (f"بازده {k['days']:.0f} روز", fmt_pct(k.get("return_1y_pct")))]
         parts.append(card("ریسک ترکیب فعلی", "<table>" + "".join(
             f"<tr><td>{e(n)}</td><td class=num>{e(v)}</td></tr>" for n, v in risk_rows) + "</table>"
-            "<p class=muted>محاسبه با تعداد فعلی سهم‌ها روی قیمت‌های گذشته. قیمت‌ها برای افزایش سرمایه "
-            "و سود نقدی تعدیل نشده‌اند.</p>"))
+            "<p class=muted>محاسبه با تعداد فعلی سهم‌ها روی قیمت‌های تعدیل‌شده‌ی گذشته.</p>"))
     parts.append(form)
     return page("پرتفوی من", "".join(parts))
 

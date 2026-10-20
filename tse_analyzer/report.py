@@ -126,7 +126,7 @@ def portfolio_text(r: PortfolioReport) -> str:
         k = r.risk
         lines += [
             "",
-            f"ریسک (ترکیب فعلی در {k['days']:.0f} روز اخیر، قیمت تعدیل‌نشده):",
+            f"ریسک (ترکیب فعلی در {k['days']:.0f} روز اخیر، قیمت تعدیل‌شده):",
             f"  نوسان سالانه {fmt_num(k['volatility_annual_pct'], 1)}%   "
             f"بیشترین افت {fmt_num(k['max_drawdown_pct'], 1)}%",
             f"  بازده یک ماه {fmt_pct(k.get('return_1m_pct'))}   سه ماه {fmt_pct(k.get('return_3m_pct'))}   "

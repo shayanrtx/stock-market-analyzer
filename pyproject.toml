@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tse-analyzer"
+version = "0.1.0"
+description = "Tehran Stock Exchange (TSETMC) market analyzer"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+tse-analyzer = "tse_analyzer.cli:main"
+
+[tool.setuptools]
+packages = ["tse_analyzer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

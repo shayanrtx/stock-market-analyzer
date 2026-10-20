@@ -218,7 +218,9 @@ final class AdminController extends Controller
             ['افزونه‌ی cURL', extension_loaded('curl') ? 'فعال' : 'غیرفعال', extension_loaded('curl')],
             ['افزونه‌ی GD (تصویر سیگنال)', function_exists('imagettftext') ? 'فعال' : 'غیرفعال', function_exists('imagettftext')],
             ['پوشه‌ی storage قابل نوشتن', is_writable($this->app->root . '/storage') ? 'بله' : 'خیر', is_writable($this->app->root . '/storage')],
-            ['آخرین اجرای cron', $this->app->settings()->system('last_cron_at') ?: 'هرگز', $this->app->settings()->system('last_cron_at') !== ''],
+            ['آخرین اجرای cron', ($last = $this->app->settings()->system('last_cron_at'))
+                ? $last . ' (' . $this->app->settings()->system('last_cron_runner') . ')' : 'هرگز',
+                $last !== '' && time() - strtotime($last) < 600],
         ];
         $market = $this->app->uncachedMarket();
         $probe = function (string $name, callable $fn, array $fields) use (&$checks): void {

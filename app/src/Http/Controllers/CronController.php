@@ -39,6 +39,7 @@ final class CronController extends Controller
             $app->db()->run('DELETE FROM login_attempts WHERE attempted_at < ?', [time() - 86400]);
         }
         $app->settings()->set(Settings::SYSTEM, 'last_cron_at', date('Y-m-d H:i:s'));
+        $app->settings()->set(Settings::SYSTEM, 'last_cron_runner', (PHP_SAPI === 'cli' ? 'CLI' : 'HTTP') . ' · PHP ' . PHP_VERSION);
         return $result;
     }
 }

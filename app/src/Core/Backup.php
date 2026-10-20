@@ -14,7 +14,9 @@ final class Backup
 {
     public const KEEP = 7;
     public const EVERY = 20 * 3600;   // "daily", with slack so a late cron run doesn't skip a day
+    public const RETRY_AFTER = 3600;  // after a failed attempt, so cron doesn't redo the whole job every minute
     private const NAME = '/^backup-\d{4}-\d{2}-\d{2}-\d{6}\.(sqlite|sql)(\.gz)?$/';
+    private const ATTEMPT = '.last-attempt';
 
     public function __construct(private Database $db, private string $dir)
     {
@@ -23,26 +25,54 @@ final class Backup
     public function due(int $now): bool
     {
         $latest = $this->list()[0] ?? null;
-        return !$latest || $now - $latest['time'] >= self::EVERY;
+        $attempt = (int) @filemtime($this->dir . '/' . self::ATTEMPT);
+        return (!$latest || $now - $latest['time'] >= self::EVERY) && $now - $attempt >= self::RETRY_AFTER;
     }
 
-    /** @return string file name of the new backup */
+    /**
+     * Writes under a temporary ".part" name (which list() and path() never show) and renames only
+     * once the file is complete, so a run cut short can't leave a broken file that looks like a backup.
+     *
+     * @return string file name of the new backup
+     */
     public function create(int $now): string
     {
         if (!is_dir($this->dir) && !@mkdir($this->dir, 0775, true)) {
             throw new \RuntimeException('پوشه‌ی پشتیبان قابل ساخت نیست: ' . $this->dir);
         }
-        $stamp = date('Y-m-d-His', $now);
-        if ($this->db->driver === 'sqlite') {
-            $raw = "{$this->dir}/backup-$stamp.sqlite";
-            $this->db->pdo->exec('VACUUM INTO ' . $this->db->pdo->quote($raw));
-        } else {
-            $raw = "{$this->dir}/backup-$stamp.sql";
-            $this->dumpMysql($raw);
+        @touch($this->dir . '/' . self::ATTEMPT, $now);
+        $base = "{$this->dir}/backup-" . date('Y-m-d-His', $now) . ($this->db->driver === 'sqlite' ? '.sqlite' : '.sql');
+        $part = "$base.part";
+        $gzPart = "$base.gz.part";
+        try {
+            if ($this->db->driver === 'sqlite') {
+                $this->db->pdo->exec('VACUUM INTO ' . $this->db->pdo->quote($part));
+            } else {
+                $this->dumpMysql($part);
+            }
+            $final = function_exists('gzopen') ? "$base.gz" : $base;
+            if ($final !== $base) {
+                $this->compress($part, $gzPart);
+                $this->publish($gzPart, $final);
+            } else {
+                $this->publish($part, $final);
+            }
+        } finally {
+            foreach ([$part, $gzPart] as $leftover) {
+                if (is_file($leftover)) {
+                    @unlink($leftover);
+                }
+            }
         }
-        $file = $this->compress($raw);
         $this->prune();
-        return basename($file);
+        return basename($final);
+    }
+
+    private function publish(string $from, string $to): void
+    {
+        if (!@rename($from, $to)) {
+            throw new \RuntimeException('فایل پشتیبان قابل ذخیره نیست.');
+        }
     }
 
     /** @return list<array{name: string, size: int, time: int}> newest first */
@@ -72,29 +102,28 @@ final class Backup
         }
     }
 
-    private function compress(string $raw): string
+    private function compress(string $from, string $to): void
     {
-        if (!function_exists('gzopen')) {
-            return $raw;
-        }
-        $in = fopen($raw, 'rb');
-        $out = gzopen("$raw.gz", 'wb6');
+        $in = @fopen($from, 'rb');
+        $out = @gzopen($to, 'wb6');
         if (!$in || !$out) {
-            return $raw;
+            throw new \RuntimeException('فشرده‌سازی پشتیبان ممکن نشد.');
         }
-        while (!feof($in)) {
-            gzwrite($out, (string) fread($in, 1 << 20));
+        $ok = true;
+        while ($ok && !feof($in)) {
+            $chunk = (string) fread($in, 1 << 20);
+            $ok = $chunk === '' || gzwrite($out, $chunk) === strlen($chunk);
         }
         fclose($in);
-        gzclose($out);
-        unlink($raw);
-        return "$raw.gz";
+        if (!gzclose($out) || !$ok) {
+            throw new \RuntimeException('نوشتن فایل فشرده‌ی پشتیبان کامل نشد (فضای دیسک؟).');
+        }
     }
 
     private function dumpMysql(string $file): void
     {
         $pdo = $this->db->pdo;
-        $fh = fopen($file, 'wb');
+        $fh = @fopen($file, 'wb');
         if (!$fh) {
             throw new \RuntimeException('فایل پشتیبان قابل نوشتن نیست.');
         }
@@ -117,6 +146,8 @@ final class Backup
             fwrite($fh, "\n");
         }
         fwrite($fh, "SET FOREIGN_KEY_CHECKS=1;\n");
-        fclose($fh);
+        if (!fclose($fh)) {
+            throw new \RuntimeException('نوشتن فایل پشتیبان کامل نشد.');
+        }
     }
 }

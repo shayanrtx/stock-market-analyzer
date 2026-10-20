@@ -466,11 +466,13 @@ final class DemoTransport implements Transport
     private function priceInfo(string $code): array
     {
         $c = $this->current($code);
+        $sessions = $this->sessions();
         return [
             'insCode' => $code, 'pDrCotVal' => $c['last'], 'pClosing' => $c['close'], 'priceYesterday' => $c['yesterday'],
             'priceFirst' => $c['open'], 'priceMax' => $c['high'], 'priceMin' => $c['low'], 'qTotTran5J' => $c['volume'],
             'qTotCap' => $c['value'], 'zTotTran' => $c['trades'], 'priceChange' => $c['close'] - $c['yesterday'],
             'instrumentState' => ['cEtaval' => 'A', 'cEtavalTitle' => 'مجاز'],
+            'finalLastDate' => (int) str_replace('-', '', (string) end($sessions)),   // last session with trades
             'hEven' => (int) MarketClock::local($this->now(), 'His'),
         ];
     }

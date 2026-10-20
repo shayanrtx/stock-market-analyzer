@@ -30,7 +30,8 @@ final class Snapshot
         public readonly float $sellICount = 0.0,
         public readonly ?float $upperLimit = null,
         public readonly ?float $lowerLimit = null,
-        public readonly ?float $low = null,      // last: snapshots stored before it existed still load
+        public readonly ?float $low = null,      // last two: snapshots stored before they existed still load
+        public readonly string $tradeDate = '',  // Ymd of the session high/low/last belong to ('' = unknown)
     ) {
     }
 
@@ -48,7 +49,18 @@ final class Snapshot
             $f($priceInfo, 'pDrCotVal') ?: null, $f($priceInfo, 'pClosing') ?: null, $f($priceInfo, 'priceYesterday') ?: null,
             $f($priceInfo, 'priceMax') ?: null, $f($priceInfo, 'qTotTran5J'), $f($priceInfo, 'qTotCap'),
             $f($priceInfo, 'zTotTran'), $book, $f($clientType, 'buy_I_Volume'), $f($clientType, 'buy_CountI'),
-            $f($clientType, 'sell_I_Volume'), $f($clientType, 'sell_CountI'), $upper, $lower, $f($priceInfo, 'priceMin') ?: null);
+            $f($clientType, 'sell_I_Volume'), $f($clientType, 'sell_CountI'), $upper, $lower, $f($priceInfo, 'priceMin') ?: null,
+            self::tradeDate($priceInfo));
+    }
+
+    /**
+     * Date of the session the price fields describe: on a halt, a holiday or before the first trade
+     * of the day, TSETMC still shows the previous session's record.
+     */
+    private static function tradeDate(array $priceInfo): string
+    {
+        $d = (string) (int) Field::get($priceInfo, ['finalLastDate', 'dEven'], 0);
+        return preg_match('/^\d{8}$/', $d) ? $d : '';
     }
 
     /** @return array<string, mixed> */

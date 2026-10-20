@@ -197,6 +197,10 @@ final class Migrations
                 )$sfx");
                 $db->pdo->exec('CREATE INDEX idx_reset_user ON password_resets (user_id, created_at)');
             },
+            // 4: whether a fired price alert reached the user's messenger (retried for a while if not).
+            4 => static function (Database $db): void {
+                $db->pdo->exec('ALTER TABLE price_alerts ADD COLUMN notified SMALLINT NOT NULL DEFAULT 0');
+            },
         ];
     }
 

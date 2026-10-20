@@ -63,8 +63,12 @@ final class AlertsTest extends TestCase
         $this->assertNull($alerts->create($uid, '1', 'نماد', PriceAlerts::BELOW, 90, '', $yesterday));
         $this->assertSame('شرط یا قیمت هشدار معتبر نیست.', $alerts->create($uid, '1', 'نماد', 'sideways', 100, '', $this->now));
 
-        // Last trade 105 after a 95–110 range: the morning's touch counts only for alerts set before the open.
-        $snap = new Snapshot('1', 'نماد', $this->now, last: 105.0, high: 110.0, low: 95.0);
+        // A halted symbol still shows its last session: that day's 95–110 range must not fire anything.
+        $stale = new Snapshot('1', 'نماد', $this->now, last: 105.0, high: 110.0, low: 95.0, tradeDate: '20261019');
+        $this->assertSame([], $alerts->trigger(['1' => $stale], $this->now));
+
+        // Last trade 105 after a 95–110 range today: the morning's touch counts only for alerts set before the open.
+        $snap = new Snapshot('1', 'نماد', $this->now, last: 105.0, high: 110.0, low: 95.0, tradeDate: '20261020');
         $fired = $alerts->trigger(['1' => $snap], $this->now);
         $this->assertSame(2, count($fired));
         $this->assertSame(['above', 'below'], array_column($fired, 'direction'));
@@ -96,13 +100,32 @@ final class AlertsTest extends TestCase
         $price = $app->market()->bundles([$inst->insCode], MarketData::PARTS_PRICE)[$inst->insCode]->lastPrice();
         $app->alerts()->create($uid, $inst->insCode, $inst->symbol, PriceAlerts::BELOW, $price * 1.2, '', $this->now - 86400);
 
+        // The messenger is down when it fires: the alert is recorded, the message retried later.
+        $fake->fail = true;
         $result = $app->live()->tick(true);
         $this->assertSame(1, $result['alerts']);
-        $this->assertSame(1, count($fake->sent));
+        $this->assertSame(0, count($fake->sent));
+        $this->assertSame(0, (int) $app->db()->value('SELECT notified FROM price_alerts'));
+
+        $fake->fail = false;
+        $this->now += 60;
+        $this->assertSame(0, $app->live()->tick(true)['alerts'], 'an alert fires once');
+        $this->assertSame(1, count($fake->sent), 'and is delivered once the messenger is back');
         $this->assertContains('هشدار قیمت — شپنا', $fake->sent[0][2]);
         $this->assertSame('42', $fake->sent[0][1]);
+        $this->assertSame(1, (int) $app->db()->value('SELECT notified FROM price_alerts'));
         $this->now += 60;
-        $this->assertSame(0, $app->live()->tick(true)['alerts']);
+        $app->live()->tick(true);
+        $this->assertSame(1, count($fake->sent), 'not twice');
+
+        // Explicitly requested, so the daily cap on signal messages doesn't silence it.
+        for ($i = 0; $i < \Sabadgardan\Notify\NotificationService::DAILY_CAP; $i++) {
+            $app->db()->insert('notifications', ['user_id' => $uid, 'channel' => 'bale', 'status' => 'sent', 'created_at' => time()]);
+        }
+        $app->alerts()->create($uid, $inst->insCode, $inst->symbol, PriceAlerts::BELOW, $price * 1.2, '', $this->now);
+        $this->now += 60;
+        $app->live()->tick(true);
+        $this->assertSame(2, count($fake->sent));
     }
 
     public function testImportantAnnouncementsAreReportedOnceAndOnlyWhenNew(): void
@@ -173,6 +196,25 @@ final class AlertsTest extends TestCase
         $this->assertFalse($reset->request('alice', 'سامانه', $this->now), 'at most three codes an hour');
     }
 
+    public function testTheResetCodeIsSentAfterTheResponse(): void
+    {
+        $_SESSION = [];
+        $app = $this->makeApp();
+        $uid = $app->auth()->createUser('alice', 'password1', 'آلیس', false);
+        $fake = new FakeMessenger('bale');
+        $app->notifier()->useMessengers($fake);
+        $app->notifier()->link($uid, 'bale', '42');
+        $request = new \Sabadgardan\Http\Request('POST', '/forgot', [], ['username' => 'alice',
+            '_token' => \Sabadgardan\Http\Session::csrfToken()], ['REMOTE_ADDR' => '10.0.0.7', 'HTTP_ACCEPT' => 'text/html']);
+        $response = $app->handle($request);
+        $this->assertSame(200, $response->status);
+        $this->assertSame([], $fake->sent, 'nothing is sent while the visitor waits for the page');
+        $app->runDeferred();
+        $this->assertSame(1, count($fake->sent));
+        $this->assertContains('کد بازیابی رمز عبور', $fake->sent[0][2]);
+        $this->assertSame(1, (int) $app->db()->value("SELECT COUNT(*) FROM audit_log WHERE action = 'password_reset_request'"));
+    }
+
     public function testBackupsAreConsistentCompressedAndPruned(): void
     {
         $db = Database::memory();
@@ -194,8 +236,25 @@ final class AlertsTest extends TestCase
             $backup->create(1_790_000_000 + $i * 86400);
         }
         $this->assertSame(Backup::KEEP, count($backup->list()));
+        $this->assertSame([], glob("$dir/*.part"), 'no temporary files left behind');
         $this->assertNull($backup->path('../demo.sqlite'));
         $this->assertNull($backup->path('restored.sqlite'), 'only backup files can be downloaded');
         $this->assertTrue($backup->path($backup->list()[0]['name']) !== null);
+    }
+
+    public function testAFailedBackupLeavesNothingAndIsNotRetriedEveryMinute(): void
+    {
+        $db = Database::memory();
+        (new Migrations($db))->migrate();
+        $db->pdo->beginTransaction();   // SQLite refuses VACUUM inside a transaction: the backup fails midway
+        $dir = sys_get_temp_dir() . '/sbg-backup-' . bin2hex(random_bytes(4));
+        $backup = new Backup($db, $dir);
+        $now = 1_790_000_000;
+        $this->expectException(\PDOException::class, fn () => $backup->create($now));
+        $this->assertSame([], $backup->list(), 'no half-written file is offered as a backup');
+        $this->assertSame([], glob("$dir/*.part"));
+        $this->assertFalse($backup->due($now + 60), 'cron backs off after a failure');
+        $this->assertTrue($backup->due($now + Backup::RETRY_AFTER));
+        $db->pdo->rollBack();
     }
 }

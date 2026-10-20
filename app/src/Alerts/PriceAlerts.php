@@ -10,14 +10,17 @@ use Sabadgardan\Live\Snapshot;
 
 /**
  * "Tell me when X trades above/below P." Checked on every live-monitor cycle against the last trade
- * and, for alerts set before today's session, the day's high or low too, so a touch between two
- * cycles isn't missed. An alert fires once, then stays in the list as a record.
+ * and, for alerts set before today's session, today's high or low too, so a touch between two
+ * cycles isn't missed (never another session's range: a halted symbol still shows its last day).
+ * An alert fires once, then stays in the list as a record. Delivery is retried for RETRY_WINDOW
+ * seconds if the messenger fails.
  */
 final class PriceAlerts
 {
     public const ABOVE = 'above';
     public const BELOW = 'below';
     public const MAX_ACTIVE = 50;
+    public const RETRY_WINDOW = 1800;
 
     public function __construct(private Database $db)
     {
@@ -84,6 +87,7 @@ final class PriceAlerts
         $codes = array_map('strval', array_keys($snapshots));
         $in = implode(',', array_fill(0, count($codes), '?'));
         $open = strtotime(MarketClock::local($now, 'Y-m-d') . ' 00:00:00 UTC') - MarketClock::OFFSET + 9 * 3600;
+        $today = MarketClock::local($now, 'Ymd');
         $fired = [];
         foreach ($this->db->all("SELECT * FROM price_alerts WHERE triggered_at IS NULL AND ins_code IN ($in)", $codes) as $a) {
             $s = $snapshots[(string) $a['ins_code']];
@@ -91,12 +95,12 @@ final class PriceAlerts
             if (!$price) {
                 continue;
             }
-            // The day's range counts only if the alert existed before the session began.
-            $before = (int) $a['created_at'] < $open;
+            // The day's range counts only if it is today's and the alert existed before the session began.
+            $range = (int) $a['created_at'] < $open && $s->tradeDate === $today;
             $target = (float) $a['price'];
             $hit = $a['direction'] === self::ABOVE
-                ? max($price, $before ? (float) $s->high : 0.0) >= $target
-                : min($price, $before && $s->low ? $s->low : $price) <= $target;
+                ? max($price, $range ? (float) $s->high : 0.0) >= $target
+                : min($price, $range && $s->low ? $s->low : $price) <= $target;
             if (!$hit) {
                 continue;
             }
@@ -104,6 +108,23 @@ final class PriceAlerts
             $fired[] = ['triggered_price' => $price, 'triggered_at' => $now] + $a;
         }
         return $fired;
+    }
+
+    /**
+     * Fired alerts whose message hasn't reached the user yet (just fired, or the messenger failed
+     * a moment ago).
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function undelivered(int $now): array
+    {
+        return $this->db->all('SELECT * FROM price_alerts WHERE triggered_at >= ? AND notified = 0 ORDER BY id',
+            [$now - self::RETRY_WINDOW]);
+    }
+
+    public function markNotified(int $id): void
+    {
+        $this->db->update('price_alerts', ['notified' => 1], ['id' => $id]);
     }
 
     /** Messenger text for a fired alert. */

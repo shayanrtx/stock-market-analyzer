@@ -90,8 +90,12 @@ final class AuthController extends Controller
                 'error' => 'نام کاربری را وارد کنید.'], 'layout_guest', 422);
         }
         $auth->recordFailure($q->ip(), $username);   // also caps how many accounts one network can message
-        $sent = $this->app->passwordReset()->request($username, $this->app->settings()->system('site_name'), $this->app->now());
-        $this->audit($q, 'password_reset_request', $username . ($sent ? '' : ' (ارسال نشد)'), null);
+        // Sent after the response: the messenger call only happens for accounts that can receive a
+        // code, and its delay would otherwise tell which those are.
+        $this->app->afterResponse(function () use ($q, $username): void {
+            $sent = $this->app->passwordReset()->request($username, $this->app->settings()->system('site_name'), $this->app->now());
+            $this->audit($q, 'password_reset_request', $username . ($sent ? '' : ' (ارسال نشد)'), null);
+        });
         return $this->view($q, 'auth/reset', ['title' => 'بازیابی رمز عبور', 'username' => $username, 'error' => '', 'sent' => true],
             'layout_guest');
     }

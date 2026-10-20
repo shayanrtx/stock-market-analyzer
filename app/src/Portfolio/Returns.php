@@ -17,6 +17,9 @@ namespace Sabadgardan\Portfolio;
  */
 final class Returns
 {
+    /** Shorter periods aren't annualised: +5% in a month is not a 79% annual return. */
+    public const MIN_ANNUAL_DAYS = 180;
+
     /**
      * @param array<string, float> $values holdings value at each session close (date => rial)
      * @param list<Transaction> $txs
@@ -130,7 +133,7 @@ final class Returns
     }
 
     /** (1 + total)^(1/years) − 1, or null for periods too short to annualise honestly. */
-    public static function annualise(float $totalReturn, float $days, float $minDays = 180): ?float
+    public static function annualise(float $totalReturn, float $days, float $minDays = self::MIN_ANNUAL_DAYS): ?float
     {
         return $days >= $minDays && $totalReturn > -1 ? (1 + $totalReturn) ** (365 / $days) - 1 : null;
     }

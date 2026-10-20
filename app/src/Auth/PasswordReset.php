@@ -13,8 +13,11 @@ use Sabadgardan\Notify\NotificationService;
  *
  * A one-time 8-digit code is sent rather than a link: a link would be built from the request's Host
  * header, which an attacker controls, and would carry the secret to the attacker's site. The code
- * is stored hashed, expires in TTL seconds, dies after MAX_ATTEMPTS wrong guesses, and at most
- * MAX_PER_HOUR codes are issued per account. Answers never reveal whether an account exists.
+ * is stored hashed, expires in TTL seconds, allows MAX_ATTEMPTS tries, and at most MAX_PER_HOUR
+ * codes are issued per account. Answers never reveal whether an account exists, and the code is
+ * sent after the response (AuthController::forgot) so its timing doesn't either. The price of the
+ * limits: someone who knows a username can use up its codes for an hour; the admin can still
+ * reset the password.
  */
 final class PasswordReset
 {
@@ -56,19 +59,20 @@ final class PasswordReset
         if (!$user) {
             return $generic;
         }
+        if ($error = Auth::validatePassword($password)) {
+            return $error;   // checked first: it says nothing about the code and spends no attempt
+        }
         $id = (int) $user['id'];
         $row = $this->db->one('SELECT * FROM password_resets WHERE user_id = ? AND used_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1',
             [$id, $now]);
-        if (!$row || (int) $row['attempts'] >= self::MAX_ATTEMPTS) {
+        // Spend an attempt atomically before comparing, so parallel guesses can't exceed the limit.
+        if (!$row || $this->db->run('UPDATE password_resets SET attempts = attempts + 1 WHERE id = ? AND attempts < ?',
+                [(int) $row['id'], self::MAX_ATTEMPTS])->rowCount() !== 1) {
             return $generic;
         }
         $code = (string) preg_replace('/\D/', '', Text::normalizeDigits($code));
         if (!hash_equals((string) $row['token_hash'], self::hash($id, $code))) {
-            $this->db->run('UPDATE password_resets SET attempts = attempts + 1 WHERE id = ?', [(int) $row['id']]);
             return $generic;
-        }
-        if ($error = Auth::validatePassword($password)) {
-            return $error;   // the code stays valid for another try
         }
         $this->db->update('users', ['password_hash' => password_hash($password, PASSWORD_DEFAULT)], ['id' => $id]);
         $this->db->run('UPDATE password_resets SET used_at = ? WHERE user_id = ? AND used_at IS NULL', [$now, $id]);

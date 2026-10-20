@@ -157,6 +157,7 @@ final class LiveMonitor
     {
         $wanted = $this->alerts?->activeSymbols() ?? [];
         if (!$wanted) {
+            $this->deliverAlerts($now);   // retries of alerts that fired earlier
             return 0;
         }
         $snaps = array_intersect_key($snapshots, $wanted);
@@ -174,10 +175,27 @@ final class LiveMonitor
             }
         }
         $fired = $this->alerts->trigger($snaps, $now);
-        foreach ($fired as $a) {
-            $this->notifier?->sendText((int) $a['user_id'], PriceAlerts::message($a, $this->settings->system('site_name')));
-        }
+        $this->deliverAlerts($now);
         return count($fired);
+    }
+
+    /**
+     * Sends fired alerts that haven't reached their owner. They were asked for explicitly, so they
+     * don't count against the daily cap; a failed send is tried again on the next cycles.
+     */
+    private function deliverAlerts(int $now): void
+    {
+        if (!$this->alerts || !$this->notifier) {
+            return;
+        }
+        foreach ($this->alerts->undelivered($now) as $a) {
+            if (!$this->notifier->channels((int) $a['user_id'])) {
+                continue;   // nothing to send to; the alert is still listed as fired on the site
+            }
+            if ($this->notifier->sendText((int) $a['user_id'], PriceAlerts::message($a, $this->settings->system('site_name')), false) > 0) {
+                $this->alerts->markNotified((int) $a['id']);
+            }
+        }
     }
 
     /**

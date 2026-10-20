@@ -139,7 +139,9 @@ final class AdminController extends Controller
         $username = (string) $db->value('SELECT username FROM users WHERE id = ?', [$id]);
         $db->transaction(static function ($db) use ($id): void {
             $db->run('DELETE FROM transactions WHERE portfolio_id IN (SELECT id FROM portfolios WHERE user_id = ?)', [$id]);
-            foreach (['portfolios', 'watchlist', 'notification_channels', 'notifications', 'settings'] as $table) {
+            // Explicit for MySQL, which ignores inline ON DELETE CASCADE.
+            foreach (['portfolios', 'watchlist', 'notification_channels', 'notifications', 'settings', 'price_alerts',
+                      'password_resets'] as $table) {
                 $db->run("DELETE FROM $table WHERE user_id = ?", [$id]);
             }
             $db->run('DELETE FROM users WHERE id = ?', [$id]);

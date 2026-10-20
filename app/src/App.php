@@ -41,6 +41,8 @@ final class App
     private ?\Closure $clock = null;
     /** @var array<string, float>|null */
     private ?array $multipliers = null;
+    /** @var list<callable> */
+    private array $deferred = [];
 
     public function __construct(public readonly string $root, public readonly Config $config)
     {
@@ -333,5 +335,35 @@ final class App
     public function run(): void
     {
         $this->handle(Request::fromGlobals())->send();
+        if ($this->deferred) {
+            // Hand the page to the visitor first, so slow or revealing work (messenger calls) doesn't
+            // show in the response time. PHP-FPM and LiteSpeed close the connection here.
+            if (function_exists('fastcgi_finish_request')) {
+                fastcgi_finish_request();
+            } elseif (function_exists('litespeed_finish_request')) {
+                litespeed_finish_request();
+            } else {
+                @flush();
+            }
+            $this->runDeferred();
+        }
+    }
+
+    /** Work to do after the response is sent (see run()). */
+    public function afterResponse(callable $job): void
+    {
+        $this->deferred[] = $job;
+    }
+
+    public function runDeferred(): void
+    {
+        foreach ($this->deferred as $job) {
+            try {
+                $job();
+            } catch (\Throwable $e) {
+                error_log("[deferred] $e");
+            }
+        }
+        $this->deferred = [];
     }
 }

@@ -164,7 +164,7 @@ echo $v->card('ترکیب دارایی‌ها', $v->chart(Charts::donut($alloc),
     </tbody>
   </table></div>
   <p class="faint" style="font-size:12px;margin:8px 0 0">از اولین خرید (<?= $v->e($v->jdate($ret['start'])) ?>) تا <?= $v->e($v->jdate($ret['end'])) ?>، <?= $v->num($ret['days']) ?> روز؛ پس از کسر کارمزدها.
-    <?= $ret['twr']['annual'] === null ? 'دوره‌ی کمتر از ۶ ماه سالانه نمی‌شود، چون عدد سالانه‌ی دوره‌های کوتاه گمراه‌کننده است.' : '' ?></p>
+    <?= $ret['twr']['annual'] === null ? 'ستون سالانه و بازده پولی برای دوره‌ی کمتر از ۶ ماه نمایش داده نمی‌شود، چون عدد سالانه‌ی دوره‌های کوتاه گمراه‌کننده است.' : '' ?></p>
   <?php $table = (string) ob_get_clean();
   echo $v->card('بازده سبد در برابر شاخص، تورم و سود بدون ریسک', $v->chart(Charts::growth($ret['index'], $ret['bench_index']), 'short') . $table,
       12, 'returns', 'بازده زمان‌وزنی مهارت انتخاب سهم را می‌سنجد؛ بازده پولی زمان‌بندی واریزها را هم');

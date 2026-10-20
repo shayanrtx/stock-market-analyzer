@@ -207,7 +207,8 @@ final class PortfolioService
         return [
             'start' => $start, 'end' => $end, 'days' => $days,
             'twr' => $row($total),
-            'xirr' => Returns::xirr(Returns::investorFlows($txs, $end, $series[$end]['value'])),
+            // XIRR is an annual rate by construction, so it follows the same minimum period.
+            'xirr' => $days >= Returns::MIN_ANNUAL_DAYS ? Returns::xirr(Returns::investorFlows($txs, $end, $series[$end]['value'])) : null,
             'benchmark' => $row($benchTotal),
             'inflation' => ['total' => (1 + $inflation) ** $years - 1, 'annual' => $inflation],
             'risk_free' => ['total' => (1 + $riskFree) ** $years - 1, 'annual' => $riskFree],

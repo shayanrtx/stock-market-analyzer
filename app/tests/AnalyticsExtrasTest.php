@@ -61,6 +61,21 @@ final class AnalyticsExtrasTest extends TestCase
         $this->assertNear(0.21, Returns::annualise(0.4641, 730), 1e-3);
     }
 
+    public function testShortPeriodsAreNotAnnualised(): void
+    {
+        $app = $this->makeApp();
+        $uid = $app->auth()->createUser('newbie', 'password1', 'تازه‌کار', false);
+        $pid = (int) $app->portfolios()->defaultPortfolio($uid)['id'];
+        $inst = $app->market()->resolve('فملی');
+        $raw = $app->market()->bundles([$inst->insCode], ['history'])[$inst->insCode]->raw;
+        $i = $raw->count() - 15;   // three weeks ago
+        $app->portfolios()->saveTransaction($uid, $pid, new Transaction(null, 'buy', $raw->dates[$i], $inst->insCode, $inst->symbol, 1000, $raw->close[$i]));
+        $ret = $app->portfolioService()->performance($app->portfolios()->transactions($uid, $pid), $uid)['returns'];
+        $this->assertNotNull($ret['twr']['total']);
+        $this->assertNull($ret['twr']['annual']);
+        $this->assertNull($ret['xirr'], 'a three-week XIRR would read as thousands of percent');
+    }
+
     public function testRiskParityEqualisesRiskContributions(): void
     {
         $w = RiskAnalyzer::riskParity(['a' => ['a' => 1.0, 'b' => 0.0], 'b' => ['a' => 0.0, 'b' => 4.0]]);

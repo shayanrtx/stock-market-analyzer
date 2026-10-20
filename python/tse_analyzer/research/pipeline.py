@@ -4,15 +4,18 @@
 2. picks the universe (the most traded shares of the market, plus portfolio.csv / watchlist.txt);
 3. brings the local price store up to date (resumable: fresh symbols are skipped on a re-run),
    the index, and the macro drivers;
-4. tests short-term trading, 1 to 5 sessions, after costs and queues (shortterm.py);
-5. scores every symbol at every month end with data up to that day, and measures the score,
+4. tests trading shares, one session to four weeks, after costs and queues, and a
+   low-turnover portfolio (shortterm.py);
+5. tests moving between the stock market, gold, the dollar and a fixed-income fund through
+   traded funds (allocation.py), and sets everything against inflation;
+6. scores every symbol at every month end with data up to that day, and measures the score,
    its factors, the «احتمال رشد» figure and the candidate ideas (calibrate.py);
-6. replays the site's buy rule (signals.py) and the market-level studies (market.py);
-7. writes a folder with the full log, a plain-language report with the accuracy summary first,
+7. replays the site's buy rule (signals.py) and the market-level studies (market.py);
+8. writes a folder with the full log, a plain-language report with the accuracy summary first,
    machine-readable results, the per-observation data, and weights.json only if it passed the
    out-of-sample test.
 
-``short_only`` stops after step 4 (a few minutes instead of the whole run).
+``short_only`` stops after step 5 (a few minutes instead of the whole run).
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ import pandas as pd
 
 from ..client import TEDPIX, TseGatewayClient, TsetmcClient, TsetmcError
 from ..store import PriceStore
-from . import calibrate, macro, market, shortterm, signals
+from . import allocation, calibrate, macro, market, shortterm, signals
 from .common import MIN_HISTORY, load_index, load_universe
 from .universe import market_universe
 
@@ -114,24 +117,31 @@ def _run(folder: Path, top: int, db: str, drivers_dir: str, workers: int, skip_u
              first.strftime("%Y-%m-%d"), last.strftime("%Y-%m-%d"),
              f"{len(index)} روز" if index is not None else "ندارد", "، ".join(macro.LABELS[k] for k in drivers) or "هیچ")
 
-    _step(4, "آزمون معامله‌ی کوتاه‌مدت (۱، ۲ و ۵ جلسه، بعد از کارمزد و با رعایت صف)")
+    _step(4, "آزمون معامله‌ی سهام (۱ جلسه تا ۴ هفته و سبد کم‌گردش، بعد از کارمزد و با رعایت صف)")
     t0 = time.time()
     short = shortterm.run(universe, index, inflation=inflation, progress=_progress("روش", 0, "روش خرید و فروش"))
     log.info("%d روز معاملاتی و %d سهم در %.0f ثانیه", short.days, short.symbols, time.time() - t0)
+    _step(5, "جابه‌جایی بین بورس، طلا، دلار و درآمد ثابت")
+    alloc = allocation.run(index, drivers, cash_rate, inflation,
+                           pd.Timestamp(short.split) if short.split else None)
+    log.info("  %d روش از %s تا %s", len(alloc.strategies), alloc.start or "—", alloc.end or "—")
     if short_only:
-        _step(5, "نوشتن نتایج")
-        summary = "\n".join(["═" * 70, "خلاصه‌ی دقت معامله‌ی کوتاه‌مدت (روی داده‌ی واقعی، فقط با اطلاعات همان روز)",
-                             "═" * 70, *shortterm.summary_lines(short), "═" * 70])
-        (folder / "report.txt").write_text(summary + "\n\n" + shortterm.report_text(short) + "\n", encoding="utf-8")
+        _step(6, "نوشتن نتایج")
+        summary = "\n".join(["═" * 70, "خلاصه‌ی سودآوری (روی داده‌ی واقعی، فقط با اطلاعات همان روز)", "═" * 70,
+                             *verdict_lines(short, alloc, inflation), "", *shortterm.summary_lines(short), "",
+                             *allocation.summary_lines(alloc), "═" * 70])
+        report = "\n\n".join([summary, shortterm.report_text(short), allocation.report_text(alloc)])
+        (folder / "report.txt").write_text(report + "\n", encoding="utf-8")
         _write_short(folder, short)
         (folder / "summary.json").write_text(json.dumps({
             "generated_at": datetime.now().isoformat(timespec="seconds"), "symbols": len(universe),
-            "shortterm": short.to_json()}, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
+            "shortterm": short.to_json(), "allocation": alloc.to_json()},
+            ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
         log.info("\n%s", summary)
         log.info("پایان در %.0f دقیقه. گزارش کامل: %s", (time.time() - started) / 60, (folder / "report.txt").resolve())
         return 0
 
-    _step(5, "ارزیابی ماهانه‌ی امتیاز و عامل‌ها (افق ۳ ماهه، بدون استفاده از داده‌ی آینده)")
+    _step(6, "ارزیابی ماهانه‌ی امتیاز و عامل‌ها (افق ۳ ماهه، بدون استفاده از داده‌ی آینده)")
     t0 = time.time()
     observations = calibrate.collect(universe, index, workers=workers, drivers=drivers or None,
                                      progress=_progress("ارزیابی", len(universe)))
@@ -141,13 +151,13 @@ def _run(folder: Path, top: int, db: str, drivers_dir: str, workers: int, skip_u
     cal = calibrate.calibrate(universe, index, workers=workers, observations=observations, drivers=drivers or None,
                               progress=_progress("دارونما", 0, "آزمون"))
 
-    _step(6, "شبیه‌سازی قانون خرید سایت")
+    _step(7, "شبیه‌سازی قانون خرید سایت")
     t0 = time.time()
     sig = signals.run(universe, index, step=step, workers=workers, progress=_progress("شبیه‌سازی", len(universe)))
     log.info("%d معامله (قانون سایت)، %d (قانون قبلی) و %d (بدون فیلتر) در %.0f ثانیه", len(sig.trades), len(sig.plain),
              len(sig.unfiltered), time.time() - t0)
 
-    _step(7, "مطالعات سطح بازار")
+    _step(8, "مطالعات سطح بازار")
     studies = {
         "seasonality": market.seasonality(index),
         "flow_sentiment": market.flow_sentiment(universe, index),
@@ -156,10 +166,10 @@ def _run(folder: Path, top: int, db: str, drivers_dir: str, workers: int, skip_u
         "macro_context": macro.market_context(index, drivers),
     }
 
-    _step(8, "نوشتن نتایج")
-    summary = accuracy_summary(cal, sig, studies, universe, first, last, drivers, short)
-    report = "\n\n".join([summary, shortterm.report_text(short), calibrate.report_text(cal), signals.report_text(sig),
-                           studies_text(studies)])
+    _step(9, "نوشتن نتایج")
+    summary = accuracy_summary(cal, sig, studies, universe, first, last, drivers, short, alloc, inflation)
+    report = "\n\n".join([summary, shortterm.report_text(short), allocation.report_text(alloc), calibrate.report_text(cal),
+                           signals.report_text(sig), studies_text(studies)])
     (folder / "report.txt").write_text(report + "\n", encoding="utf-8")
     weights = folder / ("weights.json" if cal.accepted else "weights.rejected.json")
     cal.save(weights)
@@ -171,7 +181,8 @@ def _run(folder: Path, top: int, db: str, drivers_dir: str, workers: int, skip_u
         "from": first.strftime("%Y-%m-%d"), "to": last.strftime("%Y-%m-%d"),
         "calibration": cal.to_json(), "signals": {"site": sig.site, "previous_rule": sig.baseline,
                                                  "no_filter": sig.no_filter, "by_regime": sig.by_regime},
-        "studies": studies, "shortterm": short.to_json()}, ensure_ascii=False, indent=2, default=_json_default),
+        "studies": studies, "shortterm": short.to_json(), "allocation": alloc.to_json()}, ensure_ascii=False, indent=2,
+        default=_json_default),
         encoding="utf-8")
     log.info("\n%s", summary)
     log.info("پایان در %.0f دقیقه. گزارش کامل: %s", (time.time() - started) / 60, (folder / "report.txt").resolve())
@@ -265,14 +276,46 @@ def _progress(label: str, total: int, unit: str = "نماد"):
 
 # ------------------------------------------------------------- the summary
 
+def verdict_lines(short: shortterm.ShortTerm, alloc: allocation.Allocation, inflation: float) -> list[str]:
+    """One comparison on the same years: the best share strategy, the best move between funds, the
+    stock market itself and inflation."""
+    best = short.best()
+    if not short.split or (best is None and not alloc.strategies):
+        return ["جمع‌بندی: داده برای مقایسه کافی نبود."]
+    lines = [f"جمع‌بندی (سال‌های {shortterm._jd(short.split)} تا {shortterm._jd(short.last)}، که در انتخاب هیچ عاملی "
+             f"استفاده نشده‌اند؛ تورم مقایسه {inflation * 100:.0f}٪ در سال):"]
+    if best:
+        label, m = best
+        lines.append(f"   • بهترین روش سهام: «{label}»: رشد سالانه {shortterm._pct(m['cagr_pct'], 0)}، "
+                     f"بیشترین افت {shortterm._pct(m['max_drawdown_pct'], 0)}")
+        if m.get("index_cagr_pct") is not None:
+            lines.append(f"   • شاخص کل در همان ماه‌ها: رشد سالانه {shortterm._pct(m['index_cagr_pct'], 0)}")
+    recent = sorted(((s["label"], s["recent"]) for s in alloc.strategies.values() if s["recent"].get("cagr_pct") is not None),
+                    key=lambda kv: -kv[1]["cagr_pct"])
+    if recent:
+        label, r = recent[0]
+        lines.append(f"   • بهترین جابه‌جایی با صندوق‌ها: «{label}»: رشد سالانه {shortterm._pct(r['cagr_pct'], 0)}، "
+                     f"بیشترین افت {shortterm._pct(r['max_drawdown_pct'], 0)}")
+    rates = ([best[1]["cagr_pct"]] if best and best[1].get("cagr_pct") is not None else []) \
+        + ([recent[0][1]["cagr_pct"]] if recent else [])
+    if rates:
+        lines.append("   → " + ("دست‌کم یک روش از تورم جلو زده است." if max(rates) > inflation * 100
+                                else "هیچ روشی از تورم جلو نزده است."))
+    return lines
+
+
 def accuracy_summary(cal: calibrate.Calibration, sig: signals.SignalReport, studies: dict, universe, first, last,
-                     drivers: dict, short: shortterm.ShortTerm | None = None) -> str:
+                     drivers: dict, short: shortterm.ShortTerm | None = None, alloc: allocation.Allocation | None = None,
+                     inflation: float = shortterm.INFLATION) -> str:
     a = cal.accuracy
     v = cal.validation
     test = v.get("default_test") or {}
     ic, test_ic = a["ic"], (test.get("ic") or {})
     lines = ["═" * 70, "خلاصه‌ی دقت (روی داده‌ی واقعی و فقط با اطلاعاتی که در همان روز در دسترس بود)", "═" * 70]
-    if short is not None:
+    if short is not None and alloc is not None:
+        lines += verdict_lines(short, alloc, inflation) + [""] + shortterm.summary_lines(short) + [""] \
+            + allocation.summary_lines(alloc) + ["", "─" * 70, "امتیاز پتانسیل و سیگنال‌های سایت (برای مرجع):"]
+    elif short is not None:
         lines += shortterm.summary_lines(short) + ["", "─" * 70, "افق‌های بلندتر (برای مرجع):"]
     lines += [f"داده: {len(universe)} نماد، {first:%Y-%m-%d} تا {last:%Y-%m-%d}، {a['months']} ماه، "
               f"{a['observations']} مشاهده (هر نماد در پایان هر ماه شمسی).", ""]

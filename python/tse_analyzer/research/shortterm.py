@@ -13,6 +13,12 @@ to five sessions needs a different test. For holdings of 1, 2 and 5 sessions thi
 3. What that would have meant month by month with compounding: the average month, how
    often a month reached the 15% goal, how often it lost, the deepest fall, next to
    inflation and the index.
+4. A low-turnover portfolio on the same score: five shares, each kept while it stays among
+   the ``KEEP_RANK`` best and sold only when it drops out, so a good share is not sold and
+   bought back (paying the round trip again) just because a fixed holding period ended.
+
+A fact is chosen only if its training-period correlation has |t| ≥ ``PASS_T`` and the same
+sign in both halves of the training period (an effect that flipped once is likely to flip again).
 
 What makes a short-term backtest lie in Tehran, and how it is handled here:
 
@@ -48,8 +54,9 @@ from ..potential import gregorian_to_jalali, jalali_str
 from ..stats import newey_west, wilson
 from .common import SymbolData
 
-HORIZONS = (1, 2, 5)
+HORIZONS = (1, 2, 5, 10, 20)
 TOP_K = 5
+KEEP_RANK = 20  # the low-turnover portfolio sells a share only below this rank
 TRAIN_SHARE = 0.7
 MIN_NAMES = 20  # shares on a day for a cross-sectional comparison
 MIN_DAYS = 250  # training days for a fact to be judged
@@ -192,7 +199,10 @@ def symbol_panel(sym: SymbolData, calendar: pd.DatetimeIndex, limits: pd.DataFra
                 ret = lastv[np.minimum(exit_row, n - 1)] / entry * NET - 1
             f[f"{kind}{h}"] = np.where(done, ret, np.nan)
             f[f"{kind}{h}_exit"] = np.where(done, pos[np.minimum(exit_row, n - 1)], -1)
+    f["price"] = lastv  # for valuing the low-turnover portfolio
     f["pos"] = pos
+    floats = [c for c in f.columns if f[c].dtype == np.float64 and c not in ("net_value", "flow_value", "price")]
+    f[floats] = f[floats].astype(np.float32)  # half the memory on a few hundred shares x 20 years
     f.insert(0, "symbol", sym.symbol)
     return f.rename_axis("date").reset_index()
 
@@ -272,10 +282,20 @@ class ShortTerm:
     market_flow: dict = dc_field(default_factory=dict)
     picks: pd.DataFrame | None = dc_field(default=None, repr=False)
 
+    def results(self) -> list[tuple[str, dict]]:
+        """(label, month-by-month stats) of every tested strategy: fixed holding and low turnover."""
+        out = []
+        for t in self.targets.values():
+            if t.get("monthly", {}).get("months"):
+                out.append((f"۵ سهم برتر هر روز، {t['label']}", t["monthly"]))
+            if t.get("hold", {}).get("months"):
+                out.append((f"سبد کم‌گردش با امتیاز «{t['label']}»", t["hold"]))
+        return out
+
     def best(self) -> tuple[str, dict] | None:
-        """The target whose test-period months compounded best (None when nothing was tested)."""
-        tested = [(k, t) for k, t in self.targets.items() if t.get("monthly", {}).get("months")]
-        return max(tested, key=lambda kt: kt[1]["monthly"]["cagr_pct"], default=None)
+        """The strategy whose test-period months compounded best (None when nothing was tested)."""
+        return max(self.results(), key=lambda r: r[1]["cagr_pct"] if r[1].get("cagr_pct") is not None else -1e9,
+                   default=None)
 
     def to_json(self) -> dict:
         return {"horizons": list(self.horizons), "symbols": self.symbols, "days": self.days, "from": self.first,
@@ -329,9 +349,12 @@ def _evaluate(panel, key, label, h, offset, train_mask, test_mask, calendar, ind
         train = ic[dates < panel.loc[train_mask, "date"].max()] if train_mask.any() else ic.iloc[:0]
         test = ic[dates >= panel.loc[test_mask, "date"].min()] if test_mask.any() else ic.iloc[:0]
         tr, te = _ic_stats(train, lags), _ic_stats(test, lags)
-        chosen = tr["days"] >= MIN_DAYS and tr["t"] is not None and abs(tr["t"]) >= PASS_T
+        halves = np.array_split(train.to_numpy(dtype=float), 2) if len(train) >= 2 else []
+        stable = bool(len(halves) == 2 and tr["mean"] is not None
+                      and all(len(x) and np.sign(x.mean()) == np.sign(tr["mean"]) for x in halves))
+        chosen = tr["days"] >= MIN_DAYS and tr["t"] is not None and abs(tr["t"]) >= PASS_T and stable
         confirmed = chosen and te["mean"] is not None and np.sign(te["mean"]) == np.sign(tr["mean"])
-        feats[name] = {"label": FEATURES[name], "train": tr, "test": te, "chosen": bool(chosen),
+        feats[name] = {"label": FEATURES[name], "train": tr, "test": te, "stable": stable, "chosen": bool(chosen),
                        "confirmed": bool(confirmed), "sign": int(np.sign(tr["mean"])) if chosen else 0}
     out["features"] = feats
     chosen = {n: v["sign"] for n, v in feats.items() if v["chosen"]}
@@ -340,10 +363,14 @@ def _evaluate(panel, key, label, h, offset, train_mask, test_mask, calendar, ind
         out["monthly_random"] = monthly_returns(_selected(panel[valid & test_mask], key, None, top_k), calendar, h,
                                                 offset, index, inflation)
         return out, None
-    test = panel[valid & test_mask].copy()
-    ranks = [test.groupby("date")[n].rank(pct=True) * s for n, s in chosen.items()]
-    test["score"] = pd.concat(ranks, axis=1).mean(axis=1)
-    test = test.dropna(subset=["score"])
+    # Scored on every share of the test days (a share in a buy queue can't be bought, but can be held).
+    scored = panel.loc[test_mask, ["date", "symbol", "price", "up_limit", "down_limit", key, f"{key}_exit",
+                                   *chosen]].copy()
+    ranks = [scored.groupby("date")[n].rank(pct=True) * s for n, s in chosen.items()]
+    scored["score"] = pd.concat(ranks, axis=1).mean(axis=1)
+    if offset == 0:
+        out["hold"] = hold_while_ranked(scored, index, inflation, top_k)
+    test = scored[scored[key].notna()].dropna(subset=["score"])
     picks, everyone = _selected(test, key, "score", top_k), _selected(test, key, None, top_k)
     out["strategy"] = _strategy(picks, everyone, h, offset, calendar, index)
     out["deciles"] = _deciles(test, key)
@@ -434,12 +461,15 @@ def monthly_returns(selected: pd.DataFrame, calendar: pd.DatetimeIndex, h: int, 
                 pending.setdefault(exit_pos, []).append((j, share, share * (1 + ret)))
                 at_cost += share
         equity.append(cash.sum() + at_cost)
-    curve = pd.Series(equity, index=calendar[start:end + 1])
+    return _curve_stats(pd.Series(equity, index=calendar[start:end + 1]), index, inflation)
+
+
+def _curve_stats(curve: pd.Series, index: pd.Series | None, inflation: float) -> dict:
+    """Jalali-month returns of an equity curve (first and last, partial, months left out)."""
     month = pd.Series(["%04d/%02d" % gregorian_to_jalali(d.year, d.month, d.day)[:2] for d in curve.index],
                       index=curve.index)
     ends = curve.groupby(month, sort=False).last()
     monthly = ends.pct_change()
-    monthly.iloc[0] = ends.iloc[0] / 1.0 - 1
     monthly = monthly.iloc[1:-1] if len(monthly) > 3 else monthly.iloc[0:0]  # whole months only
     if not len(monthly):
         return {"months": 0}
@@ -458,8 +488,67 @@ def monthly_returns(selected: pd.DataFrame, calendar: pd.DatetimeIndex, h: int, 
     if index is not None:
         idx = index.reindex(curve.index, method="ffill")
         idx_month = idx.groupby(month, sort=False).last().pct_change().reindex(monthly.index)
-        out["index_avg_pct"] = float(idx_month.mean() * 100) if idx_month.notna().any() else None
+        if idx_month.notna().any():
+            out["index_avg_pct"] = float(idx_month.mean() * 100)
+            idx_total = float(np.prod(1 + idx_month.dropna().to_numpy()))
+            out["index_cagr_pct"] = float((idx_total ** (12 / idx_month.notna().sum()) - 1) * 100)
     return out
+
+
+def hold_while_ranked(scored: pd.DataFrame, index: pd.Series | None, inflation: float = INFLATION,
+                      top_k: int = TOP_K, keep: int = KEEP_RANK) -> dict:
+    """A five-share portfolio that trades only when it must, valued every session.
+
+    At each close: a share that fell below rank ``keep`` (or lost its score) is sold at the last
+    price, unless it sits in a sell queue (then it waits); free money buys the best-ranked
+    shares among the top ``top_k`` that are not held and not in a buy queue, in equal parts.
+    A halted share keeps its last price until it trades again. Fees on every trade; cash earns
+    nothing.
+    """
+    curve, trades, held, sales = hold_curve(scored, top_k, keep)
+    if curve.empty:
+        return {"months": 0}
+    out = _curve_stats(curve, index, inflation)
+    if out.get("months"):
+        out["trades_per_month"] = trades / out["months"]
+        out["avg_hold_sessions"] = held / sales if sales else None
+    return out
+
+
+def hold_curve(scored: pd.DataFrame, top_k: int = TOP_K, keep: int = KEEP_RANK) -> tuple[pd.Series, int, int, int]:
+    """Value of the low-turnover portfolio at every close, the number of trades, the sessions the
+    sold shares were held in total, and the number of sales (see :func:`hold_while_ranked`)."""
+    scored = scored.drop_duplicates(["date", "symbol"])
+    days = sorted(scored["date"].unique())
+    if not days:
+        return pd.Series(dtype=float), 0, 0, 0
+    by_day = {d: g.set_index("symbol") for d, g in scored.groupby("date")}
+    cash, holdings, prices, bought_at = 1.0, {}, {}, {}
+    trades, held_sessions, sales = 0, 0, 0
+    curve = []
+    for k, day in enumerate(days):
+        g = by_day[day]
+        prices.update(g["price"].dropna().to_dict())
+        rank = g["score"].rank(ascending=False, method="first")
+        for sym in list(holdings):
+            if sym not in g.index or g.at[sym, "down_limit"] >= 1:
+                continue  # halted, or in a sell queue: cannot sell today
+            if pd.isna(rank.get(sym)) or rank[sym] > keep:
+                cash += holdings.pop(sym) * prices[sym] * (1 - SELL_FEE)
+                trades, sales, held_sessions = trades + 1, sales + 1, held_sessions + k - bought_at.pop(sym)
+        free = top_k - len(holdings)
+        if free > 0 and cash > 1e-12:
+            buyable = g[(rank <= top_k) & (g["up_limit"] < 1) & (g["price"] > 0) & ~g.index.isin(list(holdings))]
+            names = list(buyable.assign(r=rank).sort_values("r").index[:free])
+            if names:
+                part = cash / free
+                for sym in names:
+                    holdings[sym] = part / (prices[sym] * (1 + BUY_FEE))
+                    bought_at[sym] = k
+                    cash -= part
+                    trades += 1
+        curve.append(cash + sum(q * prices[s] for s, q in holdings.items()))
+    return pd.Series(curve, index=pd.DatetimeIndex(days)), trades, held_sessions, sales
 
 
 def weekday_effect(panel: pd.DataFrame, key: str) -> list[dict]:
@@ -514,50 +603,52 @@ def _t(x) -> str:
     return "—" if x is None else f"{x:+.1f}"
 
 
+def _month_line(m: dict) -> str:
+    return (f"ماهانه میانگین {_pct(m['avg_pct'])}، میانه {_pct(m['median_pct'])}، رشد سالانه {_pct(m['cagr_pct'], 0)}، "
+            f"بیشترین افت {_pct(m['max_drawdown_pct'], 0)}، ماه منفی {_p(m['loss_share'])}، ≥۱۵٪ در {_p(m['goal_share'])} ماه‌ها")
+
+
 def summary_lines(st: ShortTerm) -> list[str]:
     """The short-term part of the accuracy summary (first in report.txt)."""
     if not st.targets:
-        return ["۰) معامله‌ی کوتاه‌مدت: داده‌ی کافی نبود (دست‌کم ۲۰ سهم در هر روز و ۵۰۰ روز لازم است)."]
-    lines = [f"۰) معامله‌ی کوتاه‌مدت (۱، ۲ و ۵ جلسه؛ بعد از کارمزد رفت‌وبرگشت {ROUND_TRIP_PCT:.2f}٪ و با رعایت صف):",
+        return ["۰) معامله‌ی کوتاه‌مدت سهام: داده‌ی کافی نبود (دست‌کم ۲۰ سهم در هر روز و ۵۰۰ روز لازم است)."]
+    lines = [f"۰) معامله‌ی سهام (بعد از کارمزد رفت‌وبرگشت {ROUND_TRIP_PCT:.2f}٪ و با رعایت صف):",
              f"   داده: {st.symbols} سهم، {st.days} روز معاملاتی از {_jd(st.first)}؛ انتخاب عامل‌ها با روزهای پیش از "
-             f"{_jd(st.split)}، سنجش فقط روی {_jd(st.split)} تا {_jd(st.last)}."]
-    for key, t in st.targets.items():
+             f"{_jd(st.split)}، سنجش فقط روی {_jd(st.split)} تا {_jd(st.last)}.",
+             f"   الف) هر روز {TOP_K} سهم برتر، فروش بعد از مدت ثابت (سود هر معامله؛ میانگین ماهانه):"]
+    for t in st.targets.values():
         base = t["base_test"]
-        lines.append(f"   • {t['label']}:")
-        lines.append(f"       خرید تصادفی: میانگین {_pct(base['avg_pct'], 2)}، سودده {_p(base['win']['rate'])}")
         if not t.get("chosen"):
-            lines.append("       هیچ عاملی در دوره‌ی آموزش شواهد کافی نداشت؛ امتیاز کوتاه‌مدتی ساخته نشد.")
+            lines.append(f"     • {t['label']}: عاملی انتخاب نشد؛ خرید تصادفی {_pct(base['avg_pct'], 2)} در هر معامله")
             continue
         s, m = t["strategy"], t.get("monthly", {})
-        names = "، ".join(FEATURES[n] + ("" if sign > 0 else " (برعکس)") for n, sign in t["chosen"].items())
-        lines.append(f"       عامل‌های انتخاب‌شده: {names}")
-        lines.append(f"       {TOP_K} سهم برتر هر روز: میانگین {_pct(s['avg_pct'], 2)} در هر معامله، "
-                     f"سودده {_p(s['win']['rate'])} (بازه‌ی ۹۵٪: {_p(s['win']['low'])} تا {_p(s['win']['high'])})؛ "
-                     f"برتری بر خرید تصادفی {_pct(s['excess_pct'], 2)} (t={_t(s['excess_t'])})")
-        if m.get("months"):
-            lines.append(f"       ماهانه ({m['months']} ماه): میانگین {_pct(m['avg_pct'])}، میانه {_pct(m['median_pct'])}، "
-                         f"رسیدن به ۱۵٪ در {_p(m['goal_share'])} ماه‌ها، ماه منفی {_p(m['loss_share'])}، "
-                         f"بیشترین افت سرمایه {_pct(m['max_drawdown_pct'], 0)}، رشد سالانه {_pct(m['cagr_pct'], 0)}")
+        lines.append(f"     • {t['label']}: {_pct(s['avg_pct'], 2)} (تصادفی {_pct(base['avg_pct'], 2)})"
+                     + (f"؛ ماهانه {_pct(m['avg_pct'])}، ماه منفی {_p(m['loss_share'])}" if m.get("months") else ""))
+    holds = [(t["label"], t["hold"]) for t in st.targets.values() if t.get("hold", {}).get("months")]
+    if holds:
+        lines.append(f"   ب) سبد {TOP_K} سهمی کم‌گردش (فروش فقط وقتی سهم از {KEEP_RANK} سهم برتر بیرون برود):")
+        for label, m in holds:
+            lines.append(f"     • امتیازِ «{label}»: {_month_line(m)}؛ {m.get('trades_per_month', 0):.0f} معامله در ماه")
     best = st.best()
     if best:
-        key, t = best
-        m = t["monthly"]
-        lines.append(f"   جمع‌بندی: بهترین روش در دوره‌ی آزمون «{t['label']}» بود با میانگین ماهانه {_pct(m['avg_pct'])}؛ "
-                     f"تورم {st.inflation * 100:.0f}٪ یعنی {_pct(m['inflation_month_pct'])} در ماه"
-                     + (f" و شاخص کل {_pct(m.get('index_avg_pct'))} در ماه" if m.get("index_avg_pct") is not None else "")
-                     + f"؛ هدف ۱۵٪ در {_p(m['goal_share'])} ماه‌ها به دست آمد.")
+        label, m = best
+        lines.append(f"   جمع‌بندی: بهترین روش در دوره‌ی آزمون «{label}»: رشد سالانه {_pct(m['cagr_pct'], 0)}، میانگین ماهانه "
+                     f"{_pct(m['avg_pct'])}؛ تورم {st.inflation * 100:.0f}٪ در سال ({_pct(m['inflation_month_pct'])} در ماه)"
+                     + (f"، شاخص کل {_pct(m.get('index_cagr_pct'), 0)} در سال" if m.get("index_cagr_pct") is not None else "")
+                     + f"؛ ۱۵٪ در {_p(m['goal_share'])} ماه‌ها.")
     else:
-        lines.append("   جمع‌بندی: هیچ روش کوتاه‌مدتی در دوره‌ی آموزش شواهد کافی نداشت که آزموده شود.")
+        lines.append("   جمع‌بندی: هیچ روشی در دوره‌ی آموزش شواهد کافی نداشت که آزموده شود.")
     return lines
 
 
 def report_text(st: ShortTerm) -> str:
     if not st.targets:
-        return "معامله‌ی کوتاه‌مدت: داده‌ی کافی نبود."
-    lines = ["معامله‌ی کوتاه‌مدت (۱ تا ۵ جلسه)", "",
+        return "معامله‌ی کوتاه‌مدت سهام: داده‌ی کافی نبود."
+    lines = ["معامله‌ی سهام: ۱ جلسه تا ۴ هفته", "",
              f"کارمزد رفت‌وبرگشت سهام {ROUND_TRIP_PCT:.2f}٪ از همه‌ی بازده‌ها کم شده است. خرید وقتی آخرین قیمت در سقف دامنه است "
              "(صف خرید) ممکن فرض نشده و فروش در صف فروش تا اولین روزی که صف باز شود عقب افتاده است.",
-             f"انتخاب عامل‌ها روی روزهای پیش از {_jd(st.split)} (|t| ≥ {PASS_T:.0f})؛ همه‌ی نتایج «آزمون» فقط روی روزهای بعد از آن است.", ""]
+             f"انتخاب عامل‌ها روی روزهای پیش از {_jd(st.split)}: |t| ≥ {PASS_T:.0f} و هم‌جهت در هر دو نیمه‌ی این دوره؛ "
+             "همه‌ی نتایج «آزمون» فقط روی روزهای بعد از آن است.", ""]
     for key, t in st.targets.items():
         lines.append(f"── {t['label']}")
         base = t["base_test"]
@@ -566,8 +657,12 @@ def report_text(st: ShortTerm) -> str:
         lines.append(f"  {'عامل':<36} {'IC آموزش':>9} {'t':>6} {'IC آزمون':>9} {'t':>6}  نتیجه")
         for name, f in sorted(t["features"].items(), key=lambda kv: -abs(kv[1]["train"]["t"] or 0)):
             tr, te = f["train"], f["test"]
-            verdict = ("انتخاب شد، در آزمون تأیید شد" if f["confirmed"] else "انتخاب شد، در آزمون تأیید نشد") \
-                if f["chosen"] else "شواهد کافی نداشت"
+            if f["chosen"]:
+                verdict = "انتخاب شد، در آزمون تأیید شد" if f["confirmed"] else "انتخاب شد، در آزمون تأیید نشد"
+            elif tr["t"] is not None and abs(tr["t"]) >= PASS_T and not f.get("stable"):
+                verdict = "ناپایدار در دوره‌ی آموزش"
+            else:
+                verdict = "شواهد کافی نداشت"
             lines.append(f"  {f['label']:<36} {_n(tr['mean']):>9} {_t(tr['t']):>6} {_n(te['mean']):>9} {_t(te['t']):>6}  {verdict}")
         if t.get("strategy"):
             s = t["strategy"]
@@ -577,13 +672,18 @@ def report_text(st: ShortTerm) -> str:
                          + (f"؛ شاخص کل در همان روزها {_pct(s['index_avg_pct'], 2)}" if s.get("index_avg_pct") is not None else ""))
             lines.append("  دهک‌های امتیاز (۱۰ = بهترین): " + "  ".join(
                 f"{d['decile']}: {_pct(d['avg_pct'], 2)}/{_p(d['win'])}" for d in t["deciles"]))
-        for title, m in (("با امتیاز", t.get("monthly")), ("خرید تصادفی", t.get("monthly_random"))):
+        for title, m in (("با امتیاز", t.get("monthly")), ("خرید تصادفی", t.get("monthly_random")),
+                         (f"سبد کم‌گردش (نگه‌داری تا رتبه‌ی {KEEP_RANK})", t.get("hold"))):
             if m and m.get("months"):
+                extra = ""
+                if m.get("trades_per_month") is not None:
+                    extra = f"، {m['trades_per_month']:.0f} معامله در ماه" + (
+                        f"، نگه‌داری متوسط {m['avg_hold_sessions']:.0f} جلسه" if m.get("avg_hold_sessions") else "")
                 lines.append(f"  ماهانه {title} ({m['from']} تا {m['to']}، {m['months']} ماه): میانگین {_pct(m['avg_pct'])}، "
                              f"میانه {_pct(m['median_pct'])}، بهترین {_pct(m['best_pct'], 0)}، بدترین {_pct(m['worst_pct'], 0)}، "
                              f"≥۱۵٪: {_p(m['goal_share'])}، منفی: {_p(m['loss_share'])}، بالاتر از تورم: {_p(m['beat_inflation_share'])}، "
-                             f"بیشترین افت {_pct(m['max_drawdown_pct'], 0)}، رشد سالانه {_pct(m['cagr_pct'], 0)}"
-                             + (f"، شاخص کل {_pct(m.get('index_avg_pct'))} در ماه" if m.get("index_avg_pct") is not None else ""))
+                             f"بیشترین افت {_pct(m['max_drawdown_pct'], 0)}، رشد سالانه {_pct(m['cagr_pct'], 0)}{extra}"
+                             + (f"؛ شاخص کل {_pct(m.get('index_cagr_pct'), 0)} در سال" if m.get("index_cagr_pct") is not None else ""))
         lines.append("")
     if st.weekday:
         lines.append("روز هفته‌ی خرید (معامله‌ی یک‌جلسه‌ای، همه‌ی سهم‌ها، کل دوره): " + "، ".join(

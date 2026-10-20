@@ -501,9 +501,11 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("--output", default="research-output", help="run: پوشه‌ی نتایج")
     rs.add_argument("--drivers", default="drivers", help="پوشه‌ی CSV محرک‌های کلان دلخواه (key.csv: date,value)")
     rs.add_argument("--skip-update", action="store_true", help="run: بدون دریافت داده، فقط با پایگاه داده‌ی موجود")
-    rs.add_argument("--cash-rate", type=float, default=0.25, help="run: سود سالانه‌ی بخش نقد در هدف‌گذاری نوسان")
+    rs.add_argument("--cash-rate", type=float, default=0.25,
+                    help="run: سود سالانه‌ی صندوق درآمد ثابت (جابه‌جایی دارایی‌ها و هدف‌گذاری نوسان)")
     rs.add_argument("--short-only", action="store_true",
-                    help="run: فقط آزمون معامله‌ی کوتاه‌مدت (۱ تا ۵ جلسه)؛ چند دقیقه به جای کل مسیر")
+                    help="run: فقط آزمون‌های سودآوری (معامله‌ی سهام و جابه‌جایی بین بورس، طلا، دلار و درآمد ثابت)؛ "
+                         "چند دقیقه به جای کل مسیر")
     rs.add_argument("--inflation", type=float, default=0.89, help="run: تورم سالانه برای مقایسه (پیش‌فرض 0.89)")
     rs.add_argument("--symbols", nargs="*", default=[], help="زیرمجموعه‌ای از نمادهای پایگاه داده")
     rs.add_argument("--horizon", type=int, default=0, help="افق به جلسه (پیش‌فرض: ۶۳ کالیبراسیون، ۴۲ سیگنال)")

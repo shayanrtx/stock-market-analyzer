@@ -106,12 +106,16 @@ def test_a_planted_next_session_signal_is_found_and_traded():
     deciles = c1["deciles"]
     assert deciles[-1]["avg_pct"] > deciles[0]["avg_pct"]
     assert c1["monthly"]["months"] >= 8 and c1["monthly"]["avg_pct"] > c1["monthly_random"]["avg_pct"]
+    hold = c1["hold"]
+    assert hold["months"] >= 8 and hold["trades_per_month"] > 0 and hold["avg_hold_sessions"] >= 1
+    assert "hold" not in res.targets["o1"]  # the low-turnover portfolio trades at the close only
     assert res.picks is not None and set(res.picks["target"]) >= {"c1", "o1"}
     text = st.report_text(res)
-    for part in ("قدرت خریدار حقیقی امروز", "انتخاب شد، در آزمون تأیید شد", "ماهانه با امتیاز", "دهک‌های امتیاز"):
+    for part in ("قدرت خریدار حقیقی امروز", "انتخاب شد، در آزمون تأیید شد", "ماهانه با امتیاز", "دهک‌های امتیاز",
+                 "سبد کم‌گردش"):
         assert part in text, part
     summary = "\n".join(st.summary_lines(res))
-    assert "معامله‌ی کوتاه‌مدت" in summary and "جمع‌بندی" in summary and "۱۵٪" in summary
+    assert "معامله‌ی سهام" in summary and "جمع‌بندی" in summary and "۱۵٪" in summary and f"سبد {st.TOP_K} سهمی کم‌گردش" in summary
     # the flow facts are built from the same buying, so they carry the signal too; price facts don't
     assert set(res.to_json()["targets"]["c1"]["chosen"]) <= {"buyer_power", "ind_flow", "ind_flow_5d"}
 
@@ -120,10 +124,31 @@ def test_an_unpredictable_market_chooses_nothing():
     universe, index = market(effect=0.0, seed=7)
     res = st.run(universe, index)
     assert not any(t["chosen"] for t in res.targets.values())
-    assert "هیچ عاملی" in "\n".join(st.summary_lines(res))
+    summary = "\n".join(st.summary_lines(res))
+    assert "عاملی انتخاب نشد" in summary and "هیچ روشی" in summary
 
 
 def test_too_little_data_is_reported_plainly():
     universe, index = market(symbols=5, n=300)
     res = st.run(universe, index)
     assert not res.targets and "داده‌ی کافی نبود" in st.summary_lines(res)[0]
+
+
+def test_low_turnover_portfolio_by_hand():
+    days = pd.bdate_range("2024-01-08", periods=3)
+    rows = [  # day, symbol, score, price, buy queue, sell queue
+        (0, "A", 0.9, 100, 0, 0), (0, "B", 0.5, 50, 0, 0), (0, "C", 0.1, 10, 0, 0),
+        (1, "A", 0.1, 110, 0, 1), (1, "B", 0.9, 50, 1, 0), (1, "C", 0.5, 10, 0, 0),   # A falls but is in a sell queue
+        (2, "A", 0.1, 105, 0, 0), (2, "B", 0.9, 55, 0, 0), (2, "C", 0.5, 10, 0, 0),   # A is sold, B bought
+    ]
+    scored = pd.DataFrame([{"date": days[d], "symbol": s, "score": sc, "price": float(pr), "up_limit": float(u),
+                            "down_limit": float(dn)} for d, s, sc, pr, u, dn in rows])
+    curve, trades, held, sales = st.hold_curve(scored, top_k=1, keep=2)
+    buy, sell = 1 + st.BUY_FEE, 1 - st.SELL_FEE
+    assert curve.iloc[0] == pytest.approx(1 / buy)
+    assert curve.iloc[1] == pytest.approx(110 / 100 / buy)          # still holding A
+    assert curve.iloc[2] == pytest.approx(105 / 100 / buy * sell / buy)  # A sold at 105, all in B
+    assert (trades, sales, held) == (3, 1, 2)
+    # A share still among the best is kept: no trades after the first purchase.
+    calm = scored.assign(score=np.where(scored["symbol"] == "A", 0.9, 0.1), down_limit=0.0)
+    assert st.hold_curve(calm, top_k=1, keep=2)[1] == 1

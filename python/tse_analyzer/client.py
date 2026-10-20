@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -77,10 +78,15 @@ class TsetmcClient:
         self.cache_ttl = cache_ttl
         self.session = session or requests.Session()
         self.session.headers.update(HEADERS)
+        # Tests and offline rehearsals point the client at a local replica of the API.
+        override = os.environ.get(self.ENV_URL) if self.ENV_URL else None
+        if override:
+            self.base_url = override.rstrip("/")
 
     # ------------------------------------------------------------------ core
 
     base_url = BASE_URL
+    ENV_URL = "TSE_ANALYZER_CDN_URL"
 
     def get(self, path: str) -> Any:
         """GET a JSON endpoint relative to ``base_url``, with retry and optional cache."""
@@ -226,6 +232,7 @@ class TseGatewayClient(TsetmcClient):
     """
 
     base_url = GATEWAY_URL
+    ENV_URL = "TSE_ANALYZER_GATEWAY_URL"
 
     def market_date(self) -> list[dict]:
         return _as_list(self.get("api/v1/PublicData/MarketDate/fa"))

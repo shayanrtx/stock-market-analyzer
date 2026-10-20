@@ -2,3 +2,5 @@
 ledger.csv
 prices.sqlite
 prices.sqlite-journal
+research-output/
+drivers/

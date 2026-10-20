@@ -1,24 +1,31 @@
-"""Historical simulation of the production buy rule (``SignalEngine::buy`` in the PHP app).
+"""Historical simulation of the production buy rule (``SignalEngine`` in the PHP app).
 
 Every ``step`` sessions of each symbol, with data up to that close only:
 
-- growth-potential score ≥ 60 and price above its 200-day average
-- stop = the potential's stop when below the price, else price − 2.5 ATR; target = the next
-  resistance when more than 3% away, else price + 2 × risk; reward/risk ≥ 1.5
-- historical odds of the exact plan (:func:`potential.trade_odds`, 42 sessions): win rate
-  ≥ 45%, above the stop rate, and positive expectancy
+- price above its 200-day average; stop = the potential's stop when below the price, else
+  price − 2.5 ATR; target = the next resistance when more than 3% away, else price + 2 × risk;
+  reward/risk ≥ 1.5
+- historical odds of the exact plan (:func:`potential.trade_odds`, 42 sessions)
+
+Two rules are compared on the same candidates:
+
+- **site rule** (what the app does today): growth-potential score ≥ 60 and win rate ≥ 45%,
+  raised to 70 and 55% when the market regime is bearish (``MarketRegime`` in the PHP app,
+  rebuilt day by day from TEDPIX), win rate above the stop rate, positive expectancy, and the
+  low end of the win rate's 95% interval above the plan's break-even 1 / (1 + reward/risk);
+- **plain rule** (the rule before those additions): score ≥ 60 and win rate ≥ 45% everywhere.
 
 The live trigger (an intraday strength insight) cannot be replayed from daily data, so this
 measures the structural filter that every production signal must pass. A signal is taken at
 that day's close; the outcome is followed from the next session for up to 42 sessions on
 prices adjusted for later capital increases: target first = win at the target, stop first
 = loss at the stop, a day touching both counts as a stop, neither = the return at the
-horizon. One position per symbol at a time. The regime variant takes a signal only while
-TEDPIX is above its 200-day average.
+horizon. One position per symbol at a time.
 """
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field as dc_field
 
 import numpy as np
@@ -26,9 +33,9 @@ import pandas as pd
 
 from .. import indicators as ind
 from ..potential import trade_odds
-from ..regime import index_above_sma
+from ..regime import production_states, production_thresholds
 from ..stats import wilson
-from .common import MIN_HISTORY, SymbolData, score_at, value_at
+from .common import MIN_HISTORY, SymbolData, score_at
 
 BUY_MIN_SCORE = 60.0
 MIN_REWARD_RISK = 1.5
@@ -48,7 +55,7 @@ class Trade:
     target_pct: float
     reward_risk: float
     odds_win: float
-    regime_ok: bool | None
+    regime: str | None  # bull | neutral | bear | unknown on the signal day (None without the index)
     outcome: str = "open"
     return_pct: float | None = None
     days: int = 0
@@ -60,22 +67,24 @@ class Trade:
 
 @dataclass
 class SignalReport:
-    trades: list[Trade]
-    filtered: list[Trade]  # same rule with the market-regime filter
-    all: dict = dc_field(default_factory=dict)
-    regime: dict = dc_field(default_factory=dict)
+    trades: list[Trade]  # site rule
+    plain: list[Trade]  # rule without the regime and confidence additions
+    site: dict = dc_field(default_factory=dict)
+    baseline: dict = dc_field(default_factory=dict)
+    by_regime: dict = dc_field(default_factory=dict)  # site rule, per regime on the signal day
     universe: int = 0
     step: int = STEP
     horizon: int = HORIZON
 
 
-def plan_at(sym: SymbolData, at: pd.Timestamp, index: pd.Series | None = None, horizon: int = HORIZON) -> dict | None:
-    """The production buy rule on the data known at ``at``; the plan when it passes, else None."""
+def candidate_at(sym: SymbolData, at: pd.Timestamp, index: pd.Series | None = None, horizon: int = HORIZON) -> dict | None:
+    """The trade plan the app would compute at ``at`` (before the score/probability bars), or None
+    when there is no valid plan: below the 200-day average, no stop, or reward/risk under 1.5."""
     pot, hist = score_at(sym, at, index)
     close = hist["close"]
     price = float(close.iloc[-1])
     s200 = ind.sma(close, 200).iloc[-1]
-    if pot.score < BUY_MIN_SCORE or pd.isna(s200) or price <= s200:
+    if pd.isna(s200) or price <= s200:
         return None
     lv = pot.levels
     atr = lv.get("atr")
@@ -89,11 +98,30 @@ def plan_at(sym: SymbolData, at: pd.Timestamp, index: pd.Series | None = None, h
         return None
     target_pct, stop_pct = (target / price - 1) * 100, risk / price * 100
     odds = trade_odds(hist, target_pct, stop_pct, horizon, 1)
-    if (not odds or odds["expectancy_pct"] <= 0 or odds["win_rate"] < MIN_PROBABILITY
-            or odds["win_rate"] <= odds["loss_rate"]):
+    if not odds:
         return None
     return {"score": float(pot.score), "stop_pct": stop_pct, "target_pct": target_pct, "reward_risk": rr,
-            "odds_win": float(odds["win_rate"])}
+            "odds_win": float(odds["win_rate"]), "odds_loss": float(odds["loss_rate"]),
+            "expectancy_pct": float(odds["expectancy_pct"]), "win_low": odds.get("win_low")}
+
+
+def passes(c: dict | None, state: str | None, site_rule: bool = True) -> bool:
+    """Does a candidate plan clear the bars (site rule = ``SignalEngine::acceptable`` in PHP)?"""
+    if c is None:
+        return False
+    min_score, min_prob = production_thresholds(state) if site_rule else (BUY_MIN_SCORE, MIN_PROBABILITY)
+    ok = (c["score"] >= min_score and c["expectancy_pct"] > 0 and c["odds_win"] >= min_prob
+          and c["odds_win"] > c["odds_loss"])
+    if site_rule:
+        ok = ok and c["win_low"] is not None and c["win_low"] >= 1 / (1 + c["reward_risk"])
+    return ok
+
+
+def plan_at(sym: SymbolData, at: pd.Timestamp, index: pd.Series | None = None, horizon: int = HORIZON,
+            state: str | None = None, site_rule: bool = True) -> dict | None:
+    """The plan when the buy rule passes at ``at``, else None."""
+    c = candidate_at(sym, at, index, horizon)
+    return c if passes(c, state, site_rule) else None
 
 
 def follow(adjusted: pd.DataFrame, i: int, stop_pct: float, target_pct: float, horizon: int = HORIZON) -> tuple[str, float | None, int]:
@@ -114,37 +142,41 @@ def follow(adjusted: pd.DataFrame, i: int, stop_pct: float, target_pct: float, h
     return ("expired" if days >= horizon else "open"), ret, days
 
 
-def simulate(universe: list[SymbolData], index: pd.Series | None = None, step: int = STEP, horizon: int = HORIZON,
-             min_history: int = MIN_HISTORY, regime_filter: bool = False, cache: dict | None = None) -> list[Trade]:
-    regime = index_above_sma(index) if index is not None and len(index) else None
-    cache = {} if cache is None else cache
-    trades = []
-    for sym in universe:
-        adj = sym.adjusted
-        close = adj["close"]
-        # Cheap pre-filter on the fully adjusted series (ratios are unchanged by later adjustments);
-        # the rule itself is re-checked on point-in-time data in plan_at.
-        above = (close > ind.sma(close, 200)).to_numpy()
+def simulate_symbol(sym: SymbolData, index: pd.Series | None = None, states: pd.Series | None = None,
+                    step: int = STEP, horizon: int = HORIZON, min_history: int = MIN_HISTORY) -> tuple[list[Trade], list[Trade]]:
+    """(site-rule trades, plain-rule trades) of one symbol; the expensive plan is computed once per date."""
+    adj = sym.adjusted
+    close = adj["close"]
+    # Cheap pre-filter on the fully adjusted series (ratios are unchanged by later adjustments);
+    # the rule itself is re-checked on point-in-time data in candidate_at.
+    above = (close > ind.sma(close, 200)).to_numpy()
+    cache: dict[int, dict | None] = {}
+    out = []
+    for site_rule in (True, False):
+        trades = []
         i = max(min_history - 1, 0)
         while i < len(adj) - 1:
             at = adj.index[i]
-            state = value_at(regime, at) if regime is not None else None
-            regime_ok = bool(state) if state is not None else None
-            if not above[i] or (regime_filter and regime_ok is False):
+            if not above[i]:
                 i += step
                 continue
-            key = (sym.ins_code, i)
-            if key not in cache:
-                cache[key] = plan_at(sym, at, index, horizon)
-            plan = cache[key]
-            if plan is None:
+            state = state_at(states, at)
+            if i not in cache:
+                cache[i] = candidate_at(sym, at, index, horizon)
+            c = cache[i]
+            if not passes(c, state, site_rule):
                 i += step
                 continue
-            outcome, ret, days = follow(adj, i, plan["stop_pct"], plan["target_pct"], horizon)
-            trades.append(Trade(sym.ins_code, sym.symbol, at, plan["score"], plan["stop_pct"], plan["target_pct"],
-                                plan["reward_risk"], plan["odds_win"], regime_ok, outcome, ret, days))
+            outcome, ret, days = follow(adj, i, c["stop_pct"], c["target_pct"], horizon)
+            trades.append(Trade(sym.ins_code, sym.symbol, at, c["score"], c["stop_pct"], c["target_pct"],
+                                c["reward_risk"], c["odds_win"], state, outcome, ret, days))
             i += max(step, days + 1)  # one position per symbol at a time
-    return trades
+        out.append(trades)
+    return out[0], out[1]
+
+
+def _simulate(args) -> tuple[list[Trade], list[Trade]]:
+    return simulate_symbol(*args)
 
 
 def summarize(trades: list[Trade]) -> dict:
@@ -180,27 +212,51 @@ def summarize(trades: list[Trade]) -> dict:
 
 
 def run(universe: list[SymbolData], index: pd.Series | None = None, step: int = STEP,
-        horizon: int = HORIZON, min_history: int = MIN_HISTORY) -> SignalReport:
-    cache: dict = {}
-    trades = simulate(universe, index, step, horizon, min_history, False, cache)
-    filtered = simulate(universe, index, step, horizon, min_history, True, cache) if index is not None else []
-    return SignalReport(trades, filtered, summarize(trades), summarize(filtered) if index is not None else {},
-                        len(universe), step, horizon)
+        horizon: int = HORIZON, min_history: int = MIN_HISTORY, workers: int = 1, progress=None) -> SignalReport:
+    states = _value_states(production_states(index)) if index is not None and len(index) else None
+    args = [(sym, index, states, step, horizon, min_history) for sym in universe]
+    results = []
+    if workers > 1 and len(universe) > 1:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            for k, r in enumerate(pool.map(_simulate, args), 1):
+                results.append(r)
+                if progress:
+                    progress(k, len(args))
+    else:
+        for k, a in enumerate(args, 1):
+            results.append(_simulate(a))
+            if progress:
+                progress(k, len(args))
+    site = sorted((t for r in results for t in r[0]), key=lambda t: (t.date, t.symbol))
+    plain = sorted((t for r in results for t in r[1]), key=lambda t: (t.date, t.symbol))
+    by_regime = {state: summarize([t for t in site if t.regime == state]) for state in ("bull", "neutral", "bear")}
+    return SignalReport(site, plain, summarize(site), summarize(plain), by_regime, len(universe), step, horizon)
+
+
+def state_at(states: pd.Series | None, at: pd.Timestamp) -> str | None:
+    """Regime state on ``at`` (the last known day), or None without the index."""
+    if states is None:
+        return None
+    s = states.loc[:at]
+    return str(s.iloc[-1]) if len(s) else None
+
+
+def _value_states(states: pd.Series) -> pd.Series:
+    """Regime states without the warm-up period (no SMA200 yet)."""
+    return states[states != "unknown"]
 
 
 def report_text(r: SignalReport) -> str:
-    lines = [f"شبیه‌سازی تاریخی قانون خرید: {len(r.trades)} سیگنال روی {r.universe} نماد "
+    lines = [f"شبیه‌سازی تاریخی قانون خرید روی {r.universe} نماد "
              f"(بررسی هر {r.step} جلسه، افق {r.horizon} جلسه، ورود در قیمت پایانی روز سیگنال)", ""]
 
     def block(title: str, s: dict) -> list[str]:
-        if not s:
-            return [f"{title}: شاخص کل در دسترس نیست."]
-        if not s.get("trades"):
+        if not s or not s.get("trades"):
             return [f"{title}: معامله‌ی بسته‌شده‌ای نیست."]
         ci, tci = s["win_rate_ci"], s["target_rate_ci"]
         return [
             f"{title}: {s['trades']} معامله‌ی بسته‌شده" + (f" ({s['open']} در جریان)" if s["open"] else ""),
-            f"  نرخ برد {s['win_rate'] * 100:.0f}٪ (بازه‌ی اطمینان ۹۵٪: {ci[0] * 100:.0f}–{ci[1] * 100:.0f}٪)   "
+            f"  سودده {s['win_rate'] * 100:.0f}٪ (بازه‌ی اطمینان ۹۵٪: {ci[0] * 100:.0f}–{ci[1] * 100:.0f}٪)   "
             f"رسیدن به هدف {s['target_rate'] * 100:.0f}٪ ({tci[0] * 100:.0f}–{tci[1] * 100:.0f}٪)   "
             f"حد ضرر {s['stop_rate'] * 100:.0f}٪",
             f"  میانگین بازده {s['avg_return_pct']:+.2f}٪   میانه {s['median_return_pct']:+.2f}٪   "
@@ -209,7 +265,12 @@ def report_text(r: SignalReport) -> str:
             + f"   میانگین نگهداری {s['avg_days']:.0f} جلسه",
         ]
 
-    lines += block("بدون فیلتر بازار", r.all)
-    lines += [""] + block("با فیلتر رژیم (شاخص کل بالای میانگین ۲۰۰ روزه)", r.regime)
+    lines += block("قانون فعلی سایت (سخت‌گیرتر در بازار نزولی و با بازه‌ی اطمینان)", r.site)
+    lines += [""] + block("قانون ساده‌ی قبلی (بدون این دو)", r.baseline)
+    labels = {"bull": "بازار صعودی", "neutral": "بازار خنثی", "bear": "بازار نزولی"}
+    regime_lines = [f"  {labels[k]}: {s['trades']} معامله، سودده {s['win_rate'] * 100:.0f}٪، "
+                    f"امید ریاضی {s['expectancy_pct']:+.2f}٪" for k, s in r.by_regime.items() if s.get("trades")]
+    if regime_lines:
+        lines += ["", "قانون سایت به تفکیک روند بازار در روز سیگنال:", *regime_lines]
     lines += ["", "نتایج گذشته تضمینی برای آینده نیست؛ ماشه‌ی لحظه‌ای (بینش زنده) در این شبیه‌سازی لحاظ نشده است."]
     return "\n".join(lines)

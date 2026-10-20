@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from dataclasses import asdict
@@ -244,6 +245,10 @@ def cmd_store(client: TsetmcClient, args: argparse.Namespace) -> int:
             files = [f for f in ("portfolio.csv", "watchlist.txt") if Path(f).exists()]
         for f in files:
             symbols += _symbols_from_file(f)
+        if args.market:
+            from .research.universe import market_universe
+            gw = TseGatewayClient(timeout=args.timeout, cache_dir=args.cache_dir or None)
+            symbols += [c.symbol for c in market_universe(gw, args.top)]
         symbols = list(dict.fromkeys(symbols))
         results = [store.update(client, s, args.max_age, args.force, flows=not args.no_flows) for s in symbols]
         if not args.no_index:
@@ -251,6 +256,13 @@ def cmd_store(client: TsetmcClient, args: argparse.Namespace) -> int:
         if args.usd:
             fx = TgjuClient(timeout=args.timeout, cache_dir=args.cache_dir or None)
             results.append(store.update_series(USD_SERIES, fx.history, args.max_age, args.force))
+        if args.macro:
+            from .research import macro
+            series, fetched = macro.fetch_all(args.timeout, args.drivers)
+            macro.save(store, series)
+            for f in fetched:
+                print(f"{f.label:<12} {f.source or 'دریافت نشد'}  {f.points} روز  {f.first}–{f.last}"
+                      + ("" if f.verified or not f.source else "  (منبع تأییدنشده)"))
     if args.json:
         print(json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2))
     else:
@@ -262,18 +274,23 @@ def cmd_store(client: TsetmcClient, args: argparse.Namespace) -> int:
 
 
 def cmd_research(client: TsetmcClient, args: argparse.Namespace) -> int:
-    from .research import calibrate, load_index, load_universe, signals
+    from .research import calibrate, load_index, load_universe, macro, pipeline, signals
     from .store import PriceStore
 
+    workers = args.workers or max(1, (os.cpu_count() or 2) - 1)
+    if args.action == "run":
+        return pipeline.run(top=args.top, db=args.db, out=args.output, drivers_dir=args.drivers, workers=workers,
+                            skip_update=args.skip_update, step=args.step, cash_rate=args.cash_rate, timeout=args.timeout)
     with PriceStore(args.db) as store:
         universe = load_universe(store, args.symbols or None, args.min_history)
         index = load_index(store)
+        drivers = macro.load(store)
     if not universe:
         print(f"داده‌ای در {args.db} نیست؛ ابتدا «tse-analyzer store update ...» را اجرا کنید.", file=sys.stderr)
         return 1
     if args.action == "calibrate":
         result = calibrate.calibrate(universe, index, args.horizon or potential.HORIZON, args.min_history,
-                                     args.workers)
+                                     workers, drivers=drivers or None)
         if args.out:
             result.save(args.out)
         if args.json:
@@ -283,12 +300,13 @@ def cmd_research(client: TsetmcClient, args: argparse.Namespace) -> int:
             if args.out:
                 print(f"\nضرایب کالیبره در {args.out} ذخیره شد (برای اپ PHP: config/weights.json).")
         return 0
-    result = signals.run(universe, index, args.step, args.horizon or signals.HORIZON, args.min_history)
+    result = signals.run(universe, index, args.step, args.horizon or signals.HORIZON, args.min_history, workers)
     if args.trades:
         _write_trades(args.trades, result.trades)
     if args.json:
-        print(json.dumps({"all": result.all, "regime_filter": result.regime, "universe": result.universe,
-                          "trades": [asdict(t) for t in result.trades]}, ensure_ascii=False, indent=2, default=str))
+        print(json.dumps({"site": result.site, "previous_rule": result.baseline, "by_regime": result.by_regime,
+                          "universe": result.universe, "trades": [asdict(t) for t in result.trades]},
+                         ensure_ascii=False, indent=2, default=str))
     else:
         print(signals.report_text(result))
     return 0
@@ -358,10 +376,10 @@ def _write_trades(path: str, trades) -> None:
     with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(["date", "symbol", "ins_code", "score", "stop_pct", "target_pct", "reward_risk",
-                         "odds_win", "regime_ok", "outcome", "return_pct", "days"])
+                         "odds_win", "regime", "outcome", "return_pct", "days"])
         for t in trades:
             writer.writerow([f"{t.date:%Y-%m-%d}", t.symbol, t.ins_code, f"{t.score:.1f}", f"{t.stop_pct:.2f}",
-                             f"{t.target_pct:.2f}", f"{t.reward_risk:.2f}", f"{t.odds_win:.3f}", t.regime_ok,
+                             f"{t.target_pct:.2f}", f"{t.reward_risk:.2f}", f"{t.odds_win:.3f}", t.regime or "",
                              t.outcome, "" if t.return_pct is None else f"{t.return_pct:.2f}", t.days])
 
 
@@ -468,16 +486,26 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--no-flows", action="store_true", help="بدون تاریخچه‌ی حقیقی/حقوقی")
     st.add_argument("--no-index", action="store_true", help="بدون تاریخچه‌ی شاخص کل")
     st.add_argument("--usd", action="store_true", help="ذخیره‌ی تاریخچه‌ی دلار آزاد (tgju)")
+    st.add_argument("--market", action="store_true", help="افزودن سهم‌های پرمعامله‌ی کل بازار (دیده‌بان رسمی)")
+    st.add_argument("--top", type=int, default=200, help="--market: تعداد سهم‌ها")
+    st.add_argument("--macro", action="store_true", help="ذخیره‌ی محرک‌های کلان (دلار، تتر، طلا، سکه، بیت‌کوین، نفت)")
+    st.add_argument("--drivers", default="drivers", help="--macro: پوشه‌ی CSV محرک‌های دلخواه")
     st.set_defaults(func=cmd_store)
 
     rs = sub.add_parser("research", help="پژوهش: کالیبراسیون امتیاز پتانسیل و آزمون تاریخی سیگنال‌ها")
-    rs.add_argument("action", choices=["calibrate", "signals"])
+    rs.add_argument("action", choices=["run", "calibrate", "signals"],
+                    help="run: کل مسیر (دریافت داده، سنجش، آزمون، گزارش دقت) با لاگ کامل")
     rs.add_argument("--db", default="prices.sqlite")
+    rs.add_argument("--top", type=int, default=200, help="run: تعداد سهم‌های پرمعامله‌ی بازار")
+    rs.add_argument("--output", default="research-output", help="run: پوشه‌ی نتایج")
+    rs.add_argument("--drivers", default="drivers", help="پوشه‌ی CSV محرک‌های کلان دلخواه (key.csv: date,value)")
+    rs.add_argument("--skip-update", action="store_true", help="run: بدون دریافت داده، فقط با پایگاه داده‌ی موجود")
+    rs.add_argument("--cash-rate", type=float, default=0.25, help="run: سود سالانه‌ی بخش نقد در هدف‌گذاری نوسان")
     rs.add_argument("--symbols", nargs="*", default=[], help="زیرمجموعه‌ای از نمادهای پایگاه داده")
     rs.add_argument("--horizon", type=int, default=0, help="افق به جلسه (پیش‌فرض: ۶۳ کالیبراسیون، ۴۲ سیگنال)")
     rs.add_argument("--min-history", type=int, default=260, help="حداقل جلسات تاریخچه پیش از ارزیابی")
     rs.add_argument("--out", default="", help="calibrate: فایل JSON ضرایب (مثلاً weights.json)")
-    rs.add_argument("--workers", type=int, default=1, help="calibrate: تعداد پردازش موازی")
+    rs.add_argument("--workers", type=int, default=0, help="تعداد پردازش موازی (پیش‌فرض: هسته‌ها منهای یک)")
     rs.add_argument("--step", type=int, default=5, help="signals: فاصله‌ی بررسی قانون خرید به جلسه")
     rs.add_argument("--trades", default="", help="signals: ذخیره‌ی فهرست معاملات در CSV")
     rs.set_defaults(func=cmd_research)

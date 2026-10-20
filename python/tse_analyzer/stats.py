@@ -1,7 +1,10 @@
-"""Small statistics helpers: Wilson score intervals and Spearman rank correlation.
+"""Small statistics helpers: Wilson score intervals, Spearman rank correlation and the
+Newey-West standard error of a mean.
 
 Hit rates from a few dozen samples are noisy; a Wilson interval states how noisy. Spearman
-is implemented on numpy ranks because pandas' ``method="spearman"`` needs scipy.
+is implemented on numpy ranks because pandas' ``method="spearman"`` needs scipy. Monthly
+observations of 3-month returns overlap, so consecutive values are correlated and a plain
+standard error is too small; Newey-West widens it accordingly.
 """
 
 from __future__ import annotations
@@ -68,3 +71,25 @@ def t_stat(r: float | None, n: int) -> float | None:
     if r is None or n < 3 or abs(r) >= 1:
         return None
     return r * math.sqrt((n - 2) / (1 - r * r))
+
+
+def newey_west(values: Iterable[float], lags: int) -> dict[str, float | int | None]:
+    """Mean of a time series with a Newey-West (Bartlett kernel) standard error and t statistic.
+
+    ``lags`` = how many neighbouring values share information (for 3-month returns sampled
+    monthly: 2). Returns ``{"mean", "se", "t", "n"}``; se and t are None below 3 values.
+    """
+    x = np.asarray([v for v in values if v is not None and math.isfinite(v)], dtype=float)
+    n = len(x)
+    if n == 0:
+        return {"mean": None, "se": None, "t": None, "n": 0}
+    mean = float(x.mean())
+    if n < 3:
+        return {"mean": mean, "se": None, "t": None, "n": n}
+    d = x - mean
+    var = float(d @ d) / n
+    for lag in range(1, min(lags, n - 1) + 1):
+        weight = 1 - lag / (lags + 1)
+        var += 2 * weight * float(d[lag:] @ d[:-lag]) / n
+    se = math.sqrt(max(var, 0.0) / n)
+    return {"mean": mean, "se": se, "t": mean / se if se > 0 else None, "n": n}

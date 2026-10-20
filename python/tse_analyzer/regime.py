@@ -120,3 +120,31 @@ def breadth_above_sma(closes: dict[str, pd.Series], at: pd.Timestamp, window: in
         total += 1
         above += float(s.iloc[-1]) > float(s.iloc[-window:].mean())
     return above / total if total else None
+
+
+# ----------------------------------------------------- production rule (PHP app)
+
+PROD_BEAR_SCORE, PROD_BEAR_PROBABILITY = 70.0, 0.55   # SignalEngine::BEAR_MIN_* in the PHP app
+PROD_SCORE, PROD_PROBABILITY = 60.0, 0.45
+
+
+def production_states(index: pd.Series) -> pd.Series:
+    """Daily regime exactly as the PHP app's ``MarketRegime::assess`` decides it from the index
+    (without breadth, which has no history): bear when 20% or more below the 250-session high or
+    below a falling SMA200; bull when above a rising SMA200 and within 15% of the high; neutral
+    otherwise. Each day uses only data up to that day."""
+    s = index.sort_index().astype(float)
+    sma = ind.sma(s, 200)
+    slope = sma / sma.shift(20) - 1
+    drawdown = s / s.rolling(250, min_periods=1).max() - 1
+    above, rising = s > sma, slope > 0
+    state = pd.Series("neutral", index=s.index)
+    state[above & rising & (drawdown > -0.15)] = "bull"
+    state[(drawdown <= -0.20) | (~above & (slope < 0))] = "bear"
+    state[sma.isna() | slope.isna()] = "unknown"
+    return state
+
+
+def production_thresholds(state: str | None) -> tuple[float, float]:
+    """(minimum score, minimum probability) of a buy signal in the PHP app for this regime."""
+    return (PROD_BEAR_SCORE, PROD_BEAR_PROBABILITY) if state == "bear" else (PROD_SCORE, PROD_PROBABILITY)

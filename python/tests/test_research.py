@@ -12,7 +12,7 @@ from tse_analyzer.cli import main
 from tse_analyzer.potential import FACTOR_NAMES, assess, trade_odds
 from tse_analyzer.research import calibrate, load_index, load_universe, signals
 from tse_analyzer.research.common import SymbolData, month_ends, score_at
-from tse_analyzer.stats import rank, spearman, t_stat, wilson, wilson_rate
+from tse_analyzer.stats import newey_west, rank, spearman, t_stat, wilson, wilson_rate
 from tse_analyzer.store import PriceStore
 
 TEDPIX_SERIES = "index:32097828799138957"
@@ -55,7 +55,8 @@ def build_store(path, symbols: int = 4, n: int = 800) -> PriceStore:
 
 @pytest.fixture(scope="module")
 def lab(tmp_path_factory):
-    store = build_store(tmp_path_factory.mktemp("lab") / "prices.sqlite")
+    # 12 symbols: a month's IC needs at least calibrate.MIN_CROSS of them.
+    store = build_store(tmp_path_factory.mktemp("lab") / "prices.sqlite", symbols=12, n=900)
     universe, index = load_universe(store), load_index(store)
     return universe, index, calibrate.calibrate(universe, index), signals.run(universe, index, step=10)
 
@@ -98,54 +99,112 @@ def test_observations_unchanged_when_history_grows(lab, tmp_path):
 def test_calibration_json_schema(lab, tmp_path):
     universe, _, cal, _ = lab
     data = cal.to_json()
-    assert list(data) == ["version", "generated_at", "horizon_days", "universe", "observations", "factors",
-                          "buckets", "ic"]
-    assert data["version"] == 1 and data["horizon_days"] == 63 and data["universe"] == len(universe)
+    assert list(data)[:2] == ["version", "generated_at"] and data["version"] == 1
+    assert {"accepted", "factors", "ic", "validation", "accuracy", "probability", "candidates"} <= set(data)
+    assert data["horizon_days"] == 63 and data["universe"] == len(universe)
     assert datetime.fromisoformat(data["generated_at"]).tzinfo is not None
-    assert data["observations"] == len(cal.observations) > 50
+    assert data["observations"] == len(cal.observations) > 200
     assert list(data["factors"]) == list(FACTOR_NAMES)
     assert all(0.0 <= m <= 2.0 for m in data["factors"].values())
     assert data["factors"]["ارزش‌گذاری"] == 1.0  # no point-in-time EPS: never calibrated
-    assert [b["range"] for b in data["buckets"]] == ["0-40", "40-50", "50-60", "60-70", "70-100"]
-    assert sum(b["n"] for b in data["buckets"]) == data["observations"]
-    for b in data["buckets"]:
-        assert set(b) >= {"range", "n", "mean_fwd_pct", "median_fwd_pct", "hit_rate"}
+    if not data["accepted"]:
+        assert all(m == 1.0 for m in data["factors"].values()), "rejected weights must not change the app"
+    buckets = data["accuracy"]["buckets"]
+    assert [b["range"] for b in buckets] == ["0-40", "40-50", "50-60", "60-70", "70-100"]
+    assert sum(b["n"] for b in buckets) == data["observations"]
+    for b in buckets:
         if b["n"]:
             lo, hi = b["hit_rate_ci"]
             assert lo <= b["hit_rate"] <= hi
-    assert "score" in data["ic"] and set(data["ic"]) - {"score"} <= set(FACTOR_NAMES)
+    assert set(data["ic"]) == {"score", *FACTOR_NAMES}
     json.dumps(data, allow_nan=False)  # strict JSON for PHP
     cal.save(tmp_path / "w.json")
-    assert json.loads((tmp_path / "w.json").read_text(encoding="utf-8")) == data
+    assert json.loads((tmp_path / "w.json").read_text(encoding="utf-8")) == json.loads(json.dumps(data))
 
 
 def test_planted_signal_is_found(lab):
     universe, index, cal, _ = lab
     assert cal.target == "excess"
-    assert cal.ic["score"] > 0.1
-    buckets = [b for b in cal.buckets if b["n"] >= 10]
-    assert buckets[-1]["mean_fwd_pct"] > buckets[0]["mean_fwd_pct"]
+    assert cal.stats["score"]["mean"] > 0.1 and cal.stats["score"]["t"] > 2
+    acc = cal.accuracy
+    assert acc["quintile_spread_pct"]["mean"] > 0
+    assert acc["high_score_hit"]["rate"] > acc["base_hit"]["rate"]
+    buckets = [b for b in acc["buckets"] if b["n"] >= 10]
+    assert buckets[-1]["mean_target_pct"] > buckets[0]["mean_target_pct"]
     # Observations only on Jalali month ends, never without a full forward window.
     ends = set(month_ends(pd.DatetimeIndex(index.index)))
     assert all(o.date in ends and o.date <= index.index[-64] for o in cal.observations)
 
 
+def test_monthly_ic_and_newey_west():
+    # Positively autocorrelated values: Newey-West widens the error, so t shrinks.
+    x = list(np.repeat([0.1, -0.05, 0.12, 0.0, 0.08, -0.03], 4))
+    plain, wide = newey_west(x, 0), newey_west(x, 3)
+    assert plain["mean"] == pytest.approx(np.mean(x))
+    assert plain["se"] == pytest.approx(np.std(x) / np.sqrt(len(x)))
+    assert wide["se"] > plain["se"] and wide["t"] < plain["t"]
+    assert newey_west([], 2)["t"] is None and newey_west([1.0, 2.0], 2)["se"] is None
+
+    def obs(month, score, ret):
+        return calibrate.Observation(pd.Timestamp(month), "1", "x", score, {}, ret, ret)
+    rows = [obs("2025-01-31", s, s / 10) for s in range(10)] + [obs("2025-02-28", s, -s) for s in range(10)]
+    rows += [obs("2025-03-31", s, s) for s in range(5)]  # too few symbols that month
+    assert calibrate.monthly_ic(rows, "excess", lambda o: o.score) == [pytest.approx(1.0), pytest.approx(-1.0)]
+
+
 def test_fit_multipliers_rules():
-    n = {name: 500 for name in FACTOR_NAMES}
-    ic = {name: None for name in FACTOR_NAMES}
-    ic.update({"روند ثانویه": 0.2, "کشش قیمت": 0.1, "نقدشوندگی": -0.15, "رژیم نوسان": 0.02})
-    m = calibrate.fit_multipliers(ic, n)
+    stats = {name: {"mean": None, "t": None, "months": 0} for name in FACTOR_NAMES}
+    stats.update({"روند ثانویه": {"mean": 0.2, "t": 3.0, "months": 60}, "کشش قیمت": {"mean": 0.1, "t": 2.5, "months": 60},
+                  "نقدشوندگی": {"mean": -0.15, "t": -2.8, "months": 60}, "رژیم نوسان": {"mean": 0.05, "t": 1.0, "months": 60},
+                  "انباشت / توزیع حجم": {"mean": 0.3, "t": 4.0, "months": 12}})
+    m = calibrate.fit_multipliers(stats)
     assert m["روند ثانویه"] > 1 > m["کشش قیمت"]  # proportional to IC around the mean positive IC
     assert m["نقدشوندگی"] < 0.5  # significantly negative: toward 0
-    assert m["رژیم نوسان"] == 1.0  # not significant: default
+    assert m["رژیم نوسان"] == 1.0  # not significant
+    assert m["انباشت / توزیع حجم"] == 1.0  # too few months
     assert m["ارزش‌گذاری"] == 1.0  # no data
-    assert all(0 <= v <= 2 for v in m.values())
-    few = calibrate.fit_multipliers({"روند ثانویه": 0.5}, {"روند ثانویه": 20})
-    assert few["روند ثانویه"] == 1.0  # too few observations
-    strong = calibrate.fit_multipliers({"روند ثانویه": 0.9, "کشش قیمت": 0.05}, {"روند ثانویه": 10_000, "کشش قیمت": 10_000})
-    k, ref = 10_000 / (10_000 + calibrate.SHRINK_N), (0.9 + 0.05) / 2  # shrinkage and mean positive IC
-    assert strong["روند ثانویه"] == round(1 + k * (0.9 / ref - 1), 3) == 1.877
-    assert strong["کشش قیمت"] == round(1 + k * (0.05 / ref - 1), 3) == 0.123
+    k, ref = 60 / (60 + calibrate.SHRINK_MONTHS), (0.2 + 0.1) / 2
+    assert m["روند ثانویه"] == round(1 + k * (0.2 / ref - 1), 3)
+
+
+def test_rescore_matches_assess():
+    df = synthetic(2, 700)
+    flow = flows(df, 3)
+    bench = synthetic(4, 700)["close"]
+    plain = assess(df, None, None, flow, None, bench)
+    mult = {"روند اولیه (Primary trend)": 1.8, "کشش قیمت": 0.2}
+    tuned = assess(df, None, None, flow, None, bench, multipliers=mult)
+    o = calibrate.Observation(df.index[-1], "1", "x", plain.score, {f.name: f.score for f in plain.factors}, 0, 0,
+                              {f.name: f.weight for f in plain.factors})
+    assert calibrate.rescore(o, mult) == pytest.approx(tuned.score)
+    assert calibrate.rescore(o, None) == plain.score
+
+
+def test_out_of_sample_split_leaves_a_gap():
+    months = pd.date_range("2020-01-31", periods=40, freq="ME")
+    rows = [calibrate.Observation(m, str(k), "x", 50, {}, 0, 0) for m in months for k in range(3)]
+    train, test, period = calibrate.split_months(rows, 63)
+    train_months, test_months = sorted({o.date for o in train}), sorted({o.date for o in test})
+    assert len(test_months) == 12  # 30% of 40
+    gap = (test_months[0].to_period("M") - train_months[-1].to_period("M")).n
+    assert gap == calibrate.lags_for(63) + 1  # three whole months in between: no training return reaches the test
+    assert period["gap_months"] == 3
+
+
+def test_probability_calibration_by_hand():
+    rows = []
+    for k in range(100):  # said 80%, and 80 of 100 rose
+        rows.append(calibrate.Observation(pd.Timestamp("2025-01-31"), str(k), "x", 50, {}, 5 if k < 80 else -5, 0,
+                                          prob_up=0.8))
+    for k in range(100):  # said 30%, and 50 of 100 rose
+        rows.append(calibrate.Observation(pd.Timestamp("2025-02-28"), str(k), "x", 50, {}, 5 if k < 50 else -5, 0,
+                                          prob_up=0.3))
+    pc = calibrate.probability_calibration(rows)
+    assert pc["n"] == 200 and pc["base_rate"] == pytest.approx(0.65)
+    assert pc["brier"] == pytest.approx((80 * 0.04 + 20 * 0.64 + 50 * 0.49 + 50 * 0.09) / 200)
+    bins = {b["range"]: b for b in pc["bins"]}
+    assert bins["0.7-1.0"]["actual"] == pytest.approx(0.8) and bins["0.0-0.4"]["actual"] == pytest.approx(0.5)
+    assert pc["skill"] > 0
 
 
 def test_bucket_stats_by_hand():
@@ -155,9 +214,8 @@ def test_bucket_stats_by_hand():
                                                          obs(100, -2)])}
     assert b["0-40"]["n"] == 2 and b["0-40"]["mean_fwd_pct"] == 0 and b["0-40"]["hit_rate"] == 0.5
     assert b["40-50"]["n"] == 1 and b["70-100"]["n"] == 2 and b["50-60"]["n"] == 0
-    assert b["50-60"]["mean_fwd_pct"] is None and b["70-100"]["median_fwd_pct"] == 9
+    assert b["50-60"]["mean_fwd_pct"] is None and b["70-100"]["mean_target_pct"] == 8
     assert b["0-40"]["hit_rate_ci"] == [round(x, 4) for x in wilson(1, 2)]
-    assert b["70-100"]["mean_excess_pct"] == 8
 
 
 def test_month_ends_are_jalali():
@@ -172,21 +230,45 @@ def test_month_ends_are_jalali():
 
 def test_signal_simulation(lab):
     _, _, _, rep = lab
-    s = rep.all
+    s = rep.site
     assert s["trades"] >= 3 and 0 <= s["win_rate"] <= 1
     lo, hi = s["win_rate_ci"]
     assert lo <= s["win_rate"] <= hi
     assert s["expectancy_pct"] == pytest.approx(s["avg_return_pct"])
     for t in rep.trades:
-        assert t.score >= signals.BUY_MIN_SCORE and t.reward_risk >= signals.MIN_REWARD_RISK
-        assert t.odds_win >= signals.MIN_PROBABILITY
+        min_score, min_prob = signals.production_thresholds(t.regime)
+        assert t.score >= min_score and t.reward_risk >= signals.MIN_REWARD_RISK and t.odds_win >= min_prob
         if t.outcome == "stop":
             assert t.return_pct == pytest.approx(-t.stop_pct)
         if t.outcome == "target":
             assert t.return_pct == pytest.approx(t.target_pct)
-    assert rep.filtered and all(t.regime_ok for t in rep.filtered)
+    assert rep.plain and len(rep.plain) >= len(rep.trades) - 2  # the site rule only adds conditions
     text = signals.report_text(rep)
-    assert "نرخ برد" in text and "با فیلتر رژیم" in text
+    assert "سودده" in text and "قانون فعلی سایت" in text and "قانون ساده‌ی قبلی" in text
+
+
+def test_site_rule_matches_the_php_signal_engine():
+    c = {"score": 65.0, "expectancy_pct": 2.0, "odds_win": 0.5, "odds_loss": 0.3, "win_low": 0.42, "reward_risk": 2.0}
+    assert signals.passes(c, "bull") and signals.passes(c, "neutral")
+    assert not signals.passes(c, "bear")  # bear market: score 70 and 55%
+    assert not signals.passes(dict(c, win_low=0.30), "bull")  # interval below break-even 1/(1+2)
+    assert signals.passes(dict(c, win_low=0.30), "bull", site_rule=False)  # the previous rule had no such check
+    assert not signals.passes(dict(c, odds_win=0.29), "bull", site_rule=False)
+    assert not signals.passes(None, "bull")
+    states = pd.Series(["bull", "bear"], index=pd.to_datetime(["2025-01-01", "2025-02-01"]))
+    assert signals.state_at(states, pd.Timestamp("2025-01-20")) == "bull"
+    assert signals.state_at(states, pd.Timestamp("2025-03-01")) == "bear"
+    assert signals.state_at(states, pd.Timestamp("2024-12-01")) is None
+
+
+def test_production_regime_states():
+    from tse_analyzer.regime import production_states
+    idx = pd.bdate_range("2023-01-01", periods=320)
+    up = production_states(pd.Series(1000 + 3 * np.arange(320.0), index=idx))
+    down = production_states(pd.Series(3000 - 4 * np.arange(320.0), index=idx))
+    assert up.iloc[0] == "unknown" and up.iloc[-1] == "bull" and down.iloc[-1] == "bear"
+    crash = np.concatenate([1000 + 3 * np.arange(300.0), 1900 * (1 - 0.015 * np.arange(1, 21))])
+    assert production_states(pd.Series(crash, index=idx)).iloc[-1] == "bear"  # 20%+ below the high
 
 
 def test_follow_outcomes_by_hand():
@@ -250,12 +332,12 @@ def test_cli_research(tmp_path, capsys):
     db = tmp_path / "prices.sqlite"
     build_store(db, symbols=2, n=650).close()
     out = tmp_path / "weights.json"
-    assert main(["--cache-dir", "", "research", "calibrate", "--db", str(db), "--out", str(out)]) == 0
+    assert main(["--cache-dir", "", "research", "calibrate", "--db", str(db), "--out", str(out), "--workers", "1"]) == 0
     assert "کالیبراسیون" in capsys.readouterr().out
     data = json.loads(out.read_text(encoding="utf-8"))
     assert data["version"] == 1 and data["universe"] == 2 and list(data["factors"]) == list(FACTOR_NAMES)
     trades = tmp_path / "trades.csv"
-    assert main(["--cache-dir", "", "research", "signals", "--db", str(db), "--step", "20",
+    assert main(["--cache-dir", "", "research", "signals", "--db", str(db), "--step", "20", "--workers", "1",
                  "--trades", str(trades)]) == 0
     assert "شبیه‌سازی تاریخی" in capsys.readouterr().out
     assert trades.read_text(encoding="utf-8").startswith("date,symbol")

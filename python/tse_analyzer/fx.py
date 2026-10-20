@@ -41,6 +41,7 @@ class TgjuClient(TsetmcClient):
     """Same retry/cache behaviour as :class:`TsetmcClient`, against api.tgju.org."""
 
     base_url = TGJU_URL
+    ENV_URL = "TSE_ANALYZER_TGJU_URL"
 
     def __init__(self, timeout: float = 20.0, max_retries: int = 2, backoff: float = 0.6,
                  cache_dir: str | Path | None = None, cache_ttl: float = 3600.0,

@@ -306,12 +306,19 @@ def trade_odds(df: pd.DataFrame, target_pct: float, stop_pct: float, horizon: in
         else:
             timeout_returns.append(side * (close[i + horizon] / entry - 1) * 100)
     total = len(days)
+    # Sessions a few days apart share most of their future path: one observation per
+    # ANALOG_SPACING-session block when judging how sure the rate is (as HistoricalStudy.php).
+    effective = len({i // ANALOG_SPACING for i in days})
+    ci = wilson(round(wins / total * effective), effective)
     return {
         "samples": total,
+        "effective_samples": effective,
         "conditioned": conditioned,
         "horizon_days": horizon,
         "win_rate": wins / total,
-        "win_rate_ci": wilson(wins, total),
+        "win_rate_ci": ci,
+        "win_low": ci[0] if ci else None,
+        "win_high": ci[1] if ci else None,
         "loss_rate": losses / total,
         "timeout_rate": len(timeout_returns) / total,
         "avg_days_to_target": sum(days_to_target) / len(days_to_target) if days_to_target else None,

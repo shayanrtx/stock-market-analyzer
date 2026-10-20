@@ -36,8 +36,13 @@ def analyze(
     values: dict[str, pd.Series],
     benchmark: pd.Series | None = None,
     window: int = TRADING_DAYS,
+    risk_free: float | None = None,
 ) -> PortfolioRisk | None:
-    """``values``: symbol -> daily position value (adjusted close x current quantity)."""
+    """``values``: symbol -> daily position value (adjusted close x current quantity).
+
+    ``risk_free``: annual rate (default ``RISK_FREE_ANNUAL``; see :mod:`rates` for the treasury yield).
+    """
+    rf = RISK_FREE_ANNUAL if risk_free is None else risk_free
     if not values:
         return None
     frame = pd.concat(values, axis=1).sort_index().ffill()
@@ -52,7 +57,7 @@ def analyze(
     equity = total / total.iloc[0] * 100
     drawdown = (total / total.cummax() - 1) * 100
 
-    rf_daily = (1 + RISK_FREE_ANNUAL) ** (1 / TRADING_DAYS) - 1
+    rf_daily = (1 + rf) ** (1 / TRADING_DAYS) - 1
     excess = rets - rf_daily
     downside = excess[excess < 0]
     vol = rets.std() * math.sqrt(TRADING_DAYS)
@@ -73,7 +78,7 @@ def analyze(
         if len(downside) > 2 and downside.std() else None,
         "var95_1d_pct": var95 * 100,
         "cvar95_1d_pct": -float(tail.mean()) * 100 if len(tail) else None,
-        "risk_free_pct": RISK_FREE_ANNUAL * 100,
+        "risk_free_pct": rf * 100,
     }
 
     bench = None

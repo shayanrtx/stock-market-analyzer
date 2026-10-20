@@ -102,11 +102,13 @@ def screen_text(rows: list[SmartMoneyRow] | list[MoverRow]) -> str:
     return "\n".join(lines)
 
 
-def portfolio_text(r: PortfolioReport) -> str:
+def portfolio_text(r: PortfolioReport, perf=None) -> str:
     m = r.metrics
     lines = [
         f"ارزش سبد (NAV): {fmt_num(_to_mt(r.nav), 1)} م.ت   نقد: {fmt_num(_to_mt(r.cash), 1)} م.ت   "
         f"سود/زیان امروز: {fmt_num(_to_mt(r.day_pnl), 1)} م.ت ({fmt_pct(r.day_pct)})",
+        f"ارزش پس از کسر کارمزد و مالیات فروش: {fmt_num(_to_mt(r.liquidation_value), 1)} م.ت   "
+        f"نرخ بدون ریسک {r.risk_free * 100:.1f}٪",
     ]
     if r.cost_pnl is not None:
         lines.append(f"سود/زیان نسبت به قیمت خرید: {fmt_num(_to_mt(r.cost_pnl), 1)} م.ت")
@@ -133,6 +135,9 @@ def portfolio_text(r: PortfolioReport) -> str:
             f"  {p.holding.symbol:<12} {p.weight:5.1f}% {fmt_pct(p.day_change_pct):>8} "
             f"{fmt_num(p.potential_score):>8}  {advice}{target}"
             + (f"  [{p.queue}]" if p.queue else "")
+            + (f"  ({p.asset_class})" if p.asset_class and p.asset_class not in ("سهام", "نامشخص") else "")
+            + (f"  حباب {p.nav_premium_pct:+.1f}٪" if p.nav_premium_pct is not None else "")
+            + (f"  بتای دلاری {p.usd_beta:.2f}" if p.usd_beta is not None else "")
         )
         if p.advice and p.advice.reasons:
             lines.append(f"  {'':<12} " + "؛ ".join(p.advice.reasons))
@@ -141,7 +146,81 @@ def portfolio_text(r: PortfolioReport) -> str:
         lines += [f"  {name:<30} {w:5.1f}%" for name, w in r.sectors.items()]
     if r.warnings:
         lines += ["", "هشدارها:"] + [f"  ! {w}" for w in r.warnings]
+    if perf is not None:
+        lines += ["", performance_text(perf)]
     lines += ["", "این خروجی ابزار کمک تصمیم است و توصیه‌ی قطعی خرید یا فروش نیست."]
+    return "\n".join(lines)
+
+
+def performance_text(perf) -> str:
+    """Actual performance from the ledger (:class:`performance.Performance`)."""
+    s = perf.summary()
+    mode = "واریز/برداشت ثبت‌شده" if perf.mode == "cash" else "خرید و فروش به‌عنوان ورود و خروج پول"
+    lines = [
+        f"عملکرد واقعی سبد از دفتر معاملات ({s['start']} تا {s['end']}، {s['days']} روز؛ جریان نقدی: {mode}):",
+        f"  بازده زمان‌موزون (TWR) {fmt_pct(s['twr_pct'])}   سالانه {fmt_pct(s['twr_annual_pct'])}   "
+        f"واقعی (پس از تورم) {fmt_pct(s['real_twr_pct'])}",
+        f"  بازده پول‌موزون (MWR / XIRR سالانه) {fmt_pct(s['mwr_annual_pct'])}",
+        f"  شاخص کل در همین دوره {fmt_pct(s['benchmark_pct'])}   سالانه {fmt_pct(s['benchmark_annual_pct'])}   "
+        f"مازاد بر شاخص {fmt_pct(s['excess_vs_benchmark_pct'])}",
+        f"  نرخ بدون ریسک در همین دوره {fmt_pct(s['risk_free_pct'])} (سالانه {s['risk_free_annual_pct']:.1f}٪)   "
+        f"تورم فرضی {fmt_pct(s['inflation_pct'])} (سالانه {s['inflation_annual_pct']:.0f}٪)",
+        f"  ارزش فعلی {fmt_num(_to_mt(s['end_value']), 1)} م.ت   خالص سرمایه‌ی واردشده "
+        f"{fmt_num(_to_mt(s['net_invested']), 1)} م.ت   سود {fmt_num(_to_mt(s['profit']), 1)} م.ت",
+    ]
+    lines += [f"  ! {w}" for w in s["warnings"]]
+    return "\n".join(lines)
+
+
+def regime_text(regime) -> str:
+    return f"رژیم بازار: {regime.label} — {regime.detail}"
+
+
+def risk_free_text(rf) -> str:
+    lines = [f"نرخ بدون ریسک: {rf.rate * 100:.2f}٪ سالانه ({rf.label})"]
+    for b in rf.bills:
+        lines.append(f"  {b.symbol:<14} سررسید {b.maturity_jalali}  {b.days:>4} روز  قیمت {b.price:>10,.0f}  "
+                     f"YTM {b.ytm * 100:5.2f}٪")
+    return "\n".join(lines)
+
+
+def funds_text(rows, type_label: str = "") -> str:
+    if not rows:
+        return "صندوقی پیدا نشد."
+    lines = [f"صندوق‌های {type_label}:" if type_label else "صندوق‌ها:",
+             f"  {'نام':<40} {'NAV ابطال':>12} {'۱ ماهه':>8} {'۳ ماهه':>8} {'۱ ساله':>8} {'دارایی (م.ت)':>14}"]
+    for f in rows:
+        ret = f.returns
+        lines.append(f"  {f.name[:40]:<40} {fmt_num(f.nav_redemption):>12} {fmt_pct(ret.get(30)):>8} "
+                     f"{fmt_pct(ret.get(90)):>8} {fmt_pct(ret.get(365)):>8} {fmt_num(_to_mt(f.net_asset)):>14}")
+    return "\n".join(lines)
+
+
+def disclosures_text(items: list[dict], top: int = 15) -> str:
+    if not items:
+        return "پیام ناظر یا اطلاعیه‌ی کدالی پیدا نشد."
+    lines = ["پیام‌های ناظر و اطلاعیه‌های کدال (جدیدترین اول):"]
+    for it in items[:top]:
+        mark = "!" if it["important"] else " "
+        lines.append(f" {mark} {it['at']}  [{it['source']} · {it['label']}] {it['title']}")
+        if it["url"]:
+            lines.append(f"      {it['url']}")
+    return "\n".join(lines)
+
+
+def extras_text(usd: dict | None = None, nav: dict | None = None, nav_premium: float | None = None,
+                asset_label: str = "") -> str:
+    """Asset class, dollar sensitivity and fund NAV lines for the deep-dive report."""
+    lines = []
+    if asset_label:
+        lines.append(f"نوع دارایی: {asset_label}")
+    if usd:
+        lines.append(f"حساسیت به دلار: {usd['label']} — بتا {usd['beta']:.2f}، همبستگی {usd['correlation']:.2f} "
+                     f"(بازده هفتگی، {usd['weeks']} هفته)")
+    if nav:
+        lines.append(f"NAV ابطال {fmt_num(nav['redemption'])}" + (f"، صدور {fmt_num(nav['subscription'])}"
+                                                               if nav.get("subscription") else "")
+                     + (f"؛ حباب {nav_premium:+.1f}٪" if nav_premium is not None else ""))
     return "\n".join(lines)
 
 
@@ -176,13 +255,15 @@ def potential_text(symbol: str, p: Potential) -> str:
     ]
     a = p.analogs
     if a and a.get("mean_pct") is not None:
+        ci = a.get("win_rate_ci")
         lines += [
             "",
             f"موقعیت‌های مشابه در گذشته ({a['samples']} مورد، {a['horizon_days']} روز معاملاتی بعد):",
             f"  میانگین {fmt_pct(a['mean_pct'])}   میانه {fmt_pct(a['median_pct'])}   "
             f"بهترین {fmt_pct(a['best_pct'])}   بدترین {fmt_pct(a['worst_pct'])}",
-            f"  {a['win_rate'] * 100:.0f}٪ مثبت، {a['beat_inflation_rate'] * 100:.0f}٪ بالاتر از تورم دوره "
-            f"({a['hurdle_pct']:.0f}٪)",
+            f"  {a['win_rate'] * 100:.0f}٪ مثبت"
+            + (f" (بازه‌ی اطمینان ۹۵٪: {ci[0] * 100:.0f}–{ci[1] * 100:.0f}٪)" if ci else "")
+            + f"، {a['beat_inflation_rate'] * 100:.0f}٪ بالاتر از تورم دوره ({a['hurdle_pct']:.0f}٪)",
         ]
     elif a is not None:
         lines += ["", f"موقعیت مشابه کافی در گذشته پیدا نشد ({a.get('samples', 0)} مورد)"]

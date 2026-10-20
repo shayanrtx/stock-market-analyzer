@@ -16,6 +16,7 @@ from typing import Any, Callable
 from urllib.parse import quote
 
 from .client import FLOW_BOURSE, TEDPIX, TseGatewayClient, TsetmcClient, TsetmcError
+from .fx import USD, TgjuClient
 
 SAMPLE_ITEMS = 3
 
@@ -24,7 +25,7 @@ SAMPLE_ITEMS = 3
 class Probe:
     name: str
     fetch: Callable[[], Any]
-    expected: list[str]
+    expected: list[str]  # "a|b": either name satisfies the check
     list_key: str | None = None  # key holding the record list, if not top-level
 
 
@@ -37,7 +38,8 @@ class ProbeResult:
     error: str = ""
 
 
-def build_probes(cdn: TsetmcClient, gw: TseGatewayClient, symbol: str) -> list[Probe]:
+def build_probes(cdn: TsetmcClient, gw: TseGatewayClient, symbol: str, fx: TgjuClient | None = None,
+                 etf_symbol: str = "اهرم") -> list[Probe]:
     state: dict[str, str] = {}
 
     def ins_code() -> str:
@@ -45,6 +47,12 @@ def build_probes(cdn: TsetmcClient, gw: TseGatewayClient, symbol: str) -> list[P
             state["ins"] = str(cdn.resolve(symbol)["insCode"])
         return state["ins"]
 
+    def etf_code() -> str:
+        if "etf" not in state:
+            state["etf"] = str(cdn.resolve(etf_symbol)["insCode"])
+        return state["etf"]
+
+    extra = [Probe("tgju_usd", lambda: fx.get(f"market/indicator/summary-table-data/{USD}"), [], "data")] if fx else []
     return [
         Probe("cdn_search", lambda: cdn.get(f"Instrument/GetInstrumentSearch/{quote(symbol)}"),
               ["insCode", "lVal18AFC", "lVal30"], "instrumentSearch"),
@@ -62,8 +70,8 @@ def build_probes(cdn: TsetmcClient, gw: TseGatewayClient, symbol: str) -> list[P
         Probe("cdn_instrument_info", lambda: cdn.get(f"Instrument/GetInstrumentInfo/{ins_code()}"),
               ["lVal18AFC", "lVal30", "sector", "eps", "zTitad"], "instrumentInfo"),
         Probe("cdn_client_type_history", lambda: cdn.get(f"ClientType/GetClientTypeHistory/{ins_code()}"),
-              ["recDate", "buy_I_Volume", "buy_CountI", "sell_I_Volume", "sell_CountI", "buy_N_Volume"],
-              "clientType"),
+              ["recDate", "buy_I_Volume", "buy_I_Count|buy_CountI", "sell_I_Volume", "sell_I_Count|sell_CountI",
+               "buy_N_Volume"], "clientType"),
         Probe("cdn_best_limits", lambda: cdn.get(f"BestLimits/{ins_code()}"),
               ["number", "pMeDem", "pMeOf", "zOrdMeDem", "zOrdMeOf", "qTitMeDem", "qTitMeOf"],
               "bestLimits"),
@@ -76,6 +84,19 @@ def build_probes(cdn: TsetmcClient, gw: TseGatewayClient, symbol: str) -> list[P
         Probe("cdn_static_threshold",
               lambda: cdn.get(f"MarketData/GetStaticThreshold/{ins_code()}/{date.today():%Y%m%d}"),
               ["psGelStaMax", "psGelStaMin"], "staticThreshold"),
+        Probe("cdn_supervisor_msg", lambda: cdn.get(f"Msg/GetMsgByInsCode/{ins_code()}"),
+              ["dEven", "hEven", "tseTitle", "tseDesc"], "msg"),
+        Probe("cdn_codal", lambda: cdn.get(f"Codal/GetPreparedDataByInsCode/20/{ins_code()}"),
+              ["title|letterTitle", "publishDateTime|sentDateTime", "url|htmlUrl", "letterCode", "tracingNo"],
+              "preparedData"),
+        Probe("cdn_etf_nav", lambda: cdn.get(f"Fund/GetETFByInsCode/{etf_code()}"),
+              ["navRed|pRedTran|redemptionNav", "navSub|pSubTran|subscriptionNav", "navStat|statisticalNav"],
+              "etf"),
+        Probe("cdn_funds", lambda: cdn.get("Fund/GetFunds/6"),
+              ["mfName", "regNo", "navRed", "navSub", "navStat", "netAsset", "day30Return", "day365Return",
+               "portfolioStock", "portfolioBond", "portfolioDeposit", "portfolioCash"], "funds"),
+        Probe("cdn_treasury_search", lambda: cdn.get(f"Instrument/GetInstrumentSearch/{quote('اخزا')}"),
+              ["insCode", "lVal18AFC", "lVal30", "cIsin"], "instrumentSearch"),
         Probe("gw_market_date", lambda: gw.get("api/v1/PublicData/MarketDate/fa"),
               ["stockTypeId", "isOpen"]),
         Probe("gw_market_summary", lambda: gw.get("InstrumentProvider/api/v1/Instrument/MarketSummary/fa"),
@@ -84,7 +105,7 @@ def build_probes(cdn: TsetmcClient, gw: TseGatewayClient, symbol: str) -> list[P
               lambda: gw.get("InstrumentProvider/api/v1/MarketWatch/MarketWatchCash/fa"),
               ["instrumentId", "instrumentName", "closingPricePercent", "lastPricePercent",
                "tradeValue", "industryName"], "Items"),
-    ]
+    ] + extra
 
 
 def run_probe(probe: Probe, out_dir: Path | None) -> ProbeResult:
@@ -103,19 +124,23 @@ def run_probe(probe: Probe, out_dir: Path | None) -> ProbeResult:
                        ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-    if not records or not isinstance(records[0], dict):
+    if not records:
         return ProbeResult(probe.name, "EMPTY")
+    if not isinstance(records[0], dict):  # e.g. tgju rows are plain lists
+        return ProbeResult(probe.name, "OK" if not probe.expected else "EMPTY", len(records))
     keys = {k.lower() for k in records[0]}
-    missing = [f for f in probe.expected if f.lower() not in keys]
+    missing = [f for f in probe.expected if not any(alt.lower() in keys for alt in f.split("|"))]
     return ProbeResult(probe.name, "MISSING_FIELDS" if missing else "OK", len(records), missing)
 
 
-def run(symbol: str = "فولاد", out_dir: str | Path = "diagnostics", timeout: float = 20.0) -> list[ProbeResult]:
+def run(symbol: str = "فولاد", out_dir: str | Path = "diagnostics", timeout: float = 20.0,
+        etf_symbol: str = "اهرم") -> list[ProbeResult]:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     cdn = TsetmcClient(timeout=timeout, max_retries=1)
     gw = TseGatewayClient(timeout=timeout, max_retries=1)
-    results = [run_probe(p, out) for p in build_probes(cdn, gw, symbol)]
+    fx = TgjuClient(timeout=timeout, max_retries=1)
+    results = [run_probe(p, out) for p in build_probes(cdn, gw, symbol, fx, etf_symbol)]
     (out / "report.json").write_text(
         json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2), encoding="utf-8"
     )

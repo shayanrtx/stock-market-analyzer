@@ -21,7 +21,7 @@ dev = ["pytest>=8"]
 tse-analyzer = "tse_analyzer.cli:main"
 
 [tool.setuptools]
-packages = ["tse_analyzer", "tse_analyzer.live", "tse_analyzer.web"]
+packages = ["tse_analyzer", "tse_analyzer.live", "tse_analyzer.research", "tse_analyzer.web"]
 
 [tool.setuptools.package-data]
 "tse_analyzer.web" = ["static/*.css", "static/*.js", "static/fonts/*.woff2", "static/licenses/*.txt"]

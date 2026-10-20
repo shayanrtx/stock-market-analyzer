@@ -1,0 +1,4 @@
+# Personal data and local research data (like portfolio.csv in the root .gitignore)
+ledger.csv
+prices.sqlite
+prices.sqlite-journal

@@ -4,11 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .. import disclosures
+from .. import funds as funds_mod
 from .. import portfolio as pf
 from .. import screener
-from ..client import FLOW_BOURSE, FLOW_FARABOURSE, TEDPIX, TseGatewayClient, TsetmcClient, TsetmcError, field, \
-    instrument_type
+from ..asset_class import classify
+from ..client import FLOW_BOURSE, FLOW_FARABOURSE, TEDPIX, TseGatewayClient, TsetmcClient, TsetmcError, field
+from ..fx import usd_sensitivity
+from ..ledger import LedgerError, load_ledger
+from ..performance import fetch_performance
 from ..potential import CATEGORIES, flow_daily, fetch_potential
+from ..regime import breadth_from_watch, market_regime
 from . import charts
 from .ui import (card, chart, error_box, esc, jalali_now, kpi, kpis, kv, layout, money, num, pct, pill,
                  stock_link, table, td, tone, weight_bar)
@@ -17,6 +23,9 @@ ACTION_ORDER = ["exit", "trim", "add", "hold", "halted"]
 HOLDINGS_HELP = ("هر خط یک نماد: <b>نماد تعداد [میانگین خرید به ریال]</b>؛ مثلاً <code>فملی 17673</code> یا "
                  "<code>خودران 10000 25000</code>. وجه نقد: <code>نقد 500000000</code> (ریال). "
                  "می‌توانید مستقیم از جدول کارگزاری کپی کنید.")
+LEDGER_HELP = ("برای بازده واقعی (زمان‌موزون و پول‌موزون) فایل دفتر معاملات <code>ledger.csv</code> را کنار برنامه "
+               "بسازید؛ هر خط: <code>1403/01/16 خرید فملی 10000 5000</code>، <code>1403/01/15 واریز 500000000</code>، "
+               "<code>1403/03/01 سود فملی 1500000</code>، <code>1403/06/01 جایزه فملی 2000</code>.")
 
 
 def _benchmark(cdn: TsetmcClient):
@@ -29,7 +38,8 @@ def _benchmark(cdn: TsetmcClient):
 
 # ================================================================ portfolio
 
-def portfolio_page(cdn: TsetmcClient, path: Path) -> str:
+def portfolio_page(cdn: TsetmcClient, path: Path, ledger_path: Path | None = None, risk_free: float | None = None,
+                   usd=None) -> str:
     holdings = pf.load_holdings(path)
     editor = card("ویرایش سبد", f'<p class="muted">{HOLDINGS_HELP}</p>'
                   f'<form method="post" action="/portfolio"><textarea name="holdings">'
@@ -40,7 +50,7 @@ def portfolio_page(cdn: TsetmcClient, path: Path) -> str:
                 "</div></div></div>")
         return layout("سبد من", "portfolio", head + editor)
     try:
-        r = pf.analyze_portfolio(cdn, holdings, workers=6)
+        r = pf.analyze_portfolio(cdn, holdings, workers=6, risk_free=risk_free, usd=usd)
     except TsetmcError as exc:
         return layout("سبد من", "portfolio", error_box(exc) + editor)
     if not any(p.value for p in r.positions):
@@ -59,7 +69,8 @@ def portfolio_page(cdn: TsetmcClient, path: Path) -> str:
         kpi("سود/زیان امروز", money(r.day_pnl, signed=True, colored=True), pct(r.day_pct, 2)),
     ]
     if r.cost_pnl is not None:
-        items.append(kpi("سود/زیان از خرید", money(r.cost_pnl, signed=True, colored=True)))
+        items.append(kpi("سود/زیان از خرید", money(r.cost_pnl, signed=True, colored=True),
+                         f"ارزش پس از کارمزد فروش {money(r.liquidation_value)}"))
     items += [
         kpi("بازده ۱ ساله", pct(m.get("return_period_pct")),
             f"شاخص کل {pct(bench)}" if bench is not None else "شاخص در دسترس نیست"),
@@ -84,6 +95,7 @@ def portfolio_page(cdn: TsetmcClient, path: Path) -> str:
         parts.append(card("عملکرد سبد در برابر شاخص کل", chart(
             charts.equity_vs_benchmark(r.risk.equity, r.risk.benchmark, r.risk.drawdown), "mid"), 8,
             "پایه‌ی ۱۰۰؛ پایین: افت از سقف"))
+    parts.append(_performance_card(cdn, ledger_path, r.risk_free))
     parts.append(card("ترکیب دارایی‌ها", chart(charts.donut({p.holding.symbol: p.weight for p in r.positions
                                                             if p.value} | ({"نقد": r.cash / r.nav * 100}
                                                                            if r.cash else {})), "mid"), 4))
@@ -118,6 +130,38 @@ def portfolio_page(cdn: TsetmcClient, path: Path) -> str:
     return layout("سبد من", "portfolio", "".join(parts))
 
 
+def _performance_card(cdn: TsetmcClient, ledger_path: Path | None, risk_free: float) -> str:
+    """Actual time- and money-weighted returns from the ledger file, against TEDPIX, risk-free and inflation."""
+    if ledger_path is None:
+        return ""
+    try:
+        txs = load_ledger(ledger_path)
+        perf = fetch_performance(cdn, txs, risk_free) if txs else None
+    except LedgerError as exc:
+        return card("عملکرد واقعی سبد", f'<div class="error-box">{esc(exc)}</div>', 12)
+    if perf is None:
+        return card("عملکرد واقعی سبد", f'<p class="muted">{LEDGER_HELP}</p>', 12)
+    s = perf.summary()
+    dd = (perf.twr_index / perf.twr_index.cummax() - 1) * 100
+    body = kv([
+        ("دوره", f"{esc(s['start'])} تا {esc(s['end'])} ({s['days']} روز)"),
+        ("بازده زمان‌موزون (TWR)", f"{pct(s['twr_pct'])} · سالانه {pct(s['twr_annual_pct'])}"),
+        ("بازده پول‌موزون (XIRR سالانه)", pct(s["mwr_annual_pct"])),
+        ("شاخص کل در همین دوره", f"{pct(s['benchmark_pct'])} · سالانه {pct(s['benchmark_annual_pct'])}"),
+        ("مازاد بر شاخص", pct(s["excess_vs_benchmark_pct"])),
+        ("نرخ بدون ریسک در همین دوره", f"{pct(s['risk_free_pct'])} · سالانه {s['risk_free_annual_pct']:.1f}٪"),
+        ("تورم فرضی در همین دوره", pct(s["inflation_pct"], colored=False)),
+        ("بازده واقعی (پس از تورم)", pct(s["real_twr_pct"])),
+        ("ارزش فعلی / خالص سرمایه‌ی واردشده", f"{money(s['end_value'])} / {money(s['net_invested'])}"),
+        ("سود", money(s["profit"], signed=True, colored=True)),
+    ])
+    if s["warnings"]:
+        body += '<ul class="alerts">' + "".join(f"<li>{esc(w)}</li>" for w in s["warnings"]) + "</ul>"
+    graph = chart(charts.equity_vs_benchmark(perf.twr_index, perf.benchmark_index, dd, "سبد (زمان‌موزون)"), "mid")
+    return (card("عملکرد واقعی سبد (دفتر معاملات)", body, 5, "TWR: مهارت مدیر · XIRR: تجربه‌ی سرمایه‌گذار")
+            + card("رشد ۱۰۰ واحد سرمایه در برابر شاخص کل", graph, 7, "بازده زمان‌موزون؛ پایین: افت از سقف"))
+
+
 def _actions_table(r: pf.PortfolioReport) -> str:
     rows = []
     positions = [p for p in r.positions if p.advice]
@@ -145,12 +189,14 @@ def _holdings_table(r: pf.PortfolioReport) -> str:
     rows = []
     for p in r.positions:
         if p.error:
-            rows.append(f"<tr>{td(stock_link(p.holding.symbol))}<td colspan=13 class=down>{esc(p.error)}</td></tr>")
+            rows.append(f"<tr>{td(stock_link(p.holding.symbol))}<td colspan=14 class=down>{esc(p.error)}</td></tr>")
             continue
         queue = pill(p.queue, "buyq" if p.queue == "صف خرید" else "sellq") if p.queue else ""
+        kind = p.asset_class if p.asset_class and p.asset_class not in ("سهام", "نامشخص") else ""
+        premium = f" · حباب {p.nav_premium_pct:+.1f}٪" if p.nav_premium_pct is not None else ""
         rows.append("<tr>" + "".join([
-            td(stock_link(p.holding.symbol) + (f' <span class="faint">{esc(p.asset_type)}</span>'
-                                                if p.asset_type and p.asset_type != "سهام" else "")),
+            td(stock_link(p.holding.symbol) + (f' <span class="faint">{esc(kind + premium)}</span>'
+                                                if kind or premium else "")),
             td(num(p.close), p.close),
             td(pct(p.day_change_pct, 2), p.day_change_pct),
             td(money(p.value), p.value),
@@ -164,25 +210,30 @@ def _holdings_table(r: pf.PortfolioReport) -> str:
             td(num(p.days_to_exit, 1), p.days_to_exit),
             td(pct(p.risk_share, 1, False, False), p.risk_share),
             td(num(p.buyer_power, 2), p.buyer_power),
+            td(num(p.usd_beta, 2), p.usd_beta),
             td(queue),
         ]) + "</tr>")
     return table([("نماد", "text"), ("قیمت", "num"), ("امروز", "num"), ("ارزش", "num"), ("وزن", "num"),
                   ("از خرید", "num"), ("پتانسیل", "num"), ("تا هدف", "num"), ("حد ضرر", "num"),
                   ("پاداش/ریسک", "num"), ("روز خروج", "num"), ("سهم ریسک", "num"), ("قدرت خریدار", "num"),
-                  ("صف", "text")], rows)
+                  ("بتای دلار", "num"), ("صف", "text")], rows)
 
 
 # ==================================================================== stock
 
-def stock_page(cdn: TsetmcClient, symbol: str) -> str:
+def stock_page(cdn: TsetmcClient, symbol: str, risk_free: float | None = None, usd=None) -> str:
     try:
-        a, p, history = fetch_potential(cdn, symbol, benchmark=_benchmark(cdn))
+        a, p, history = fetch_potential(cdn, symbol, benchmark=_benchmark(cdn), risk_free=risk_free)
     except TsetmcError as exc:
         return layout(symbol, "", error_box(exc))
     lv, h, val = p.levels, p.history, p.valuation
     change = (history["close"].iloc[-1] / history["yesterday"].iloc[-1] * 100 - 100) \
         if "yesterday" in history.columns and history["yesterday"].iloc[-1] else None
-    meta = " · ".join(x for x in [p.sector, instrument_type(a.isin) if a.isin else "", a.status or ""] if x)
+    kind = classify(a.isin, a.name, a.symbol, p.sector, p.sub_sector)
+    nav = funds_mod.fetch_nav(cdn, a.ins_code, a.name, kind) if kind.is_fund else None
+    premium = funds_mod.nav_premium(a.last_close, nav)
+    sens = usd_sensitivity(history["close"], usd)
+    meta = " · ".join(x for x in [p.sector, kind.label if a.isin else "", a.status or ""] if x)
     head = (f'<div class="page-head"><div><h1>{esc(a.symbol)} <span class="muted" style="font-weight:500">'
             f'{esc(a.name)}</span></h1><div class="sub">{esc(meta)}</div></div>'
             f'<div style="text-align:left"><div style="font-size:26px;font-weight:700">{num(a.last_close)} '
@@ -193,8 +244,8 @@ def stock_page(cdn: TsetmcClient, symbol: str) -> str:
             f"{esc(p.label)} · اطمینان {esc(p.confidence)}"),
         kpi("احتمال رشد ۳ ماهه", pct(p.probability_up * 100 if p.probability_up is not None else None, 0,
                                      False, False),
-            f"بر پایه‌ی {p.analogs['samples']} موقعیت مشابه" if p.analogs and p.probability_up is not None
-            else "موقعیت مشابه کافی نیست"),
+            f"بر پایه‌ی {p.analogs['samples']} موقعیت مشابه" + _ci_text(p.analogs.get("win_rate_ci"))
+            if p.analogs and p.probability_up is not None else "موقعیت مشابه کافی نیست"),
         kpi("تا هدف (مقاومت)", pct(lv["upside_pct"]), num(lv["target"]) if lv["target"] else "نزدیک سقف تاریخی"),
         kpi("حد ضرر", num(lv.get("stop")), f"{pct(lv.get('stop_pct'))} · زیر حمایت، حداکثر ۲.۵ ATR"),
         kpi("پاداش به ریسک", num(lv.get("reward_risk"), 1), "تا هدف ÷ تا حد ضرر · ۲ به بالا مطلوب"),
@@ -202,7 +253,14 @@ def stock_page(cdn: TsetmcClient, symbol: str) -> str:
         kpi("RSI ۱۴", num(a.indicators.get("rsi14"), 0), f"قدرت خریدار {num(a.money_flow.get('buyer_power'), 2)}"),
         kpi("بازده ۱ ساله", pct(a.returns.get("1y")), f"رشد مرکب سالانه {pct(h.get('cagr_pct'))}"),
     ]
+    if nav:
+        items.append(kpi("حباب نسبت به NAV", pct(premium), f"NAV ابطال {num(nav['redemption'])}"))
+    if sens:
+        items.append(kpi("حساسیت به دلار", num(sens["beta"], 2),
+                         f"{esc(sens['label'])} · همبستگی {num(sens['correlation'], 2)}"))
     parts = [head, kpis(items)]
+    if kind.role and kind.kind != "stock":
+        parts.append(card(kind.label, f'<p class="muted">{esc(kind.role)}</p>', 12))
     parts.append(card("نمودار قیمت (تعدیل‌شده)", chart(charts.price_panels(history), "tall"), 12,
                       "شمعی + میانگین‌های ۲۰/۵۰/۲۰۰ و بولینگر · حجم · RSI · MACD — با اسکرول بزرگ‌نمایی کنید"))
 
@@ -270,7 +328,29 @@ def stock_page(cdn: TsetmcClient, symbol: str) -> str:
                   f'{"▲" if x.score > 0 else "▼" if x.score < 0 else "•"}</span>'
                   f'<span class="detail">{esc(x.detail)}</span></li>' for x in a.signals)
     parts.append(card("سیگنال‌های کوتاه‌مدت", f'<ul class="reasons">{sig}</ul>', 4))
+    parts.append(card("پیام‌های ناظر و اطلاعیه‌های کدال", _disclosures(disclosures.fetch(cdn, a.ins_code, 15)), 12,
+                      "جدیدترین اول · موارد مهم: توقف، مجمع، افزایش سرمایه، سود نقدی"))
     return layout(f"{a.symbol} — تحلیل", "", "".join(parts))
+
+
+def _ci_text(ci) -> str:
+    return f" · بازه‌ی ۹۵٪: {ci[0] * 100:.0f}–{ci[1] * 100:.0f}٪" if ci else ""
+
+
+def _disclosures(items: list[dict]) -> str:
+    if not items:
+        return '<div class="empty">پیام ناظر یا اطلاعیه‌ی کدالی در دسترس نیست.</div>'
+    out = []
+    for it in items[:15]:
+        title = esc(it["title"])
+        if it["url"].startswith(("https://", "http://")):
+            title = f'<a href="{esc(it["url"])}" target="_blank" rel="noopener">{title}</a>'
+        body = f'<div class="detail">{esc(it["body"][:400])}</div>' if it["body"] else ""
+        out.append(f'<li><span class="pts {"down" if it["important"] else "flat"}">{esc(it["source"])}</span><div>'
+                   f'<span class="name">{title}</span><span class="cat">{esc(it["label"])} · {esc(it["at"])}</span>'
+                   f"{body}</div></li>")
+    return f'<ul class="reasons">{"".join(out)}</ul>'
+
 
 
 def _reasons(p) -> str:
@@ -298,20 +378,24 @@ def market_page(cdn: TsetmcClient, gw: TseGatewayClient) -> str:
         fara = cdn.indices(FLOW_FARABOURSE)
     except TsetmcError:
         fara = []
-    items = [kpi(str(i.get("lVal30", "")).strip(), num(i.get("xDrNivJIdx004")), pct(i.get("xVarIdxJRfV"), 2))
-             for i in bourse[:5]]
-    items += [kpi("فرابورس — " + str(i.get("lVal30", "")).strip(), num(i.get("xDrNivJIdx004")),
-                  pct(i.get("xVarIdxJRfV"), 2)) for i in fara[:1]]
-    parts.append(kpis(items))
-
     hist = _benchmark(cdn)
-    parts.append(card("شاخص کل بورس", chart(charts.index_line(hist), "mid") if hist is not None
-                      else '<div class="empty">تاریخچه‌ی شاخص در دسترس نیست.</div>', 8))
-
     try:
         watch = gw.market_watch("Cash")
     except TsetmcError:
         watch = []
+    regime = market_regime(hist, breadth_from_watch(watch))
+    items = [kpi(str(i.get("lVal30", "")).strip(), num(i.get("xDrNivJIdx004")), pct(i.get("xVarIdxJRfV"), 2))
+             for i in bourse[:5]]
+    items += [kpi("فرابورس — " + str(i.get("lVal30", "")).strip(), num(i.get("xDrNivJIdx004")),
+                  pct(i.get("xVarIdxJRfV"), 2)) for i in fara[:1]]
+    items.append(kpi("رژیم بازار", esc(regime.label), f"آستانه‌ی امتیاز خرید {regime.buy_threshold:.0f}"))
+    parts.append(kpis(items))
+    parts.append(card("رژیم بازار", f'<div class="summary">{esc(regime.detail)}</div>', 12,
+                      "شاخص کل در برابر میانگین ۲۰۰ روزه و پهنای بازار"))
+
+    parts.append(card("شاخص کل بورس", chart(charts.index_line(hist), "mid") if hist is not None
+                      else '<div class="empty">تاریخچه‌ی شاخص در دسترس نیست.</div>', 8))
+
     rows = [_watch_row(i) for i in watch]
     rows = [r for r in rows if r]
     if rows:
@@ -402,6 +486,8 @@ def screener_page(cdn: TsetmcClient, gw: TseGatewayClient, kind: str) -> str:
     tabs = ('<div class="page-head"><div><h1>اسکنر بازار</h1></div><nav class="nav">'
             f'<a href="/screener" class="{"" if kind == "movers" else "active"}">ورود پول هوشمند</a>'
             f'<a href="/screener?type=movers" class="{"active" if kind == "movers" else ""}">بیشترین رشد</a></nav></div>')
+    regime = screener.regime(cdn, gw)
+    tabs += card("رژیم بازار: " + regime.label, f'<div class="summary">{esc(regime.detail)}</div>', 12)
     try:
         if kind == "movers":
             rows = screener.top_movers(gw, top=40)

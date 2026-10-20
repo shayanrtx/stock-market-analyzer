@@ -169,7 +169,22 @@ class TsetmcClient:
         return self.get(f"BestLimits/{ins_code}").get("bestLimits") or []
 
     def supervisor_messages(self, ins_code: str) -> list[dict]:
-        return self.get(f"Msg/GetMsgByInsCode/{ins_code}").get("msg") or []
+        """Supervisor messages (پیام ناظر): dEven (YYYYMMDD), hEven (HHMMSS), tseTitle, tseDesc."""
+        return records(self.get(f"Msg/GetMsgByInsCode/{ins_code}"), "msg")
+
+    def announcements(self, ins_code: str, top: int = 20) -> list[dict]:
+        """Codal announcements, newest first (field names unverified; see :mod:`disclosures`)."""
+        return records(self.get(f"Codal/GetPreparedDataByInsCode/{top}/{ins_code}"), "preparedData")
+
+    def etf(self, ins_code: str) -> dict:
+        """ETF record with the published NAVs (funds only; field names unverified, see :mod:`funds`)."""
+        data = self.get(f"Fund/GetETFByInsCode/{ins_code}")
+        value = field(data, "etf") if isinstance(data, dict) else None
+        return value if isinstance(value, dict) else {}
+
+    def funds(self, type_id: int) -> list[dict]:
+        """Fund registry of one type (see :data:`funds.FUND_TYPES`)."""
+        return records(self.get(f"Fund/GetFunds/{type_id}"), "funds")
 
     # ----------------------------------------------------------------- market
 
@@ -246,6 +261,12 @@ def _as_list(data: Any) -> list:
     return data if isinstance(data, list) else []
 
 
+def records(data: Any, key: str) -> list[dict]:
+    """The record list under ``key`` (case-insensitive), or ``data`` itself when it is a list."""
+    rows = field(data, key) if isinstance(data, dict) else data
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
 def daily_history_frame(rows: list[dict]) -> pd.DataFrame:
     """Convert ``closingPriceDaily`` records to an OHLCV DataFrame indexed by date."""
     columns = {
@@ -294,18 +315,11 @@ def adjust_prices(df: pd.DataFrame) -> tuple[pd.DataFrame, list[tuple[pd.Timesta
     return out, events
 
 
-def instrument_type(isin: str | None) -> str:
-    """Broad asset class from the ISIN prefix (see ENDPOINTS.md, «تشخیص نوع ابزار مالی»)."""
-    isin = (isin or "").upper()
-    if isin.startswith("IRT"):
-        return "صندوق"
-    if isin.startswith("IRB"):
-        return "اوراق"
-    if isin.startswith(("IRO9", "IRS", "IROF")):
-        return "اختیار معامله"
-    if isin.startswith("IRO"):
-        return "سهام"
-    return "نامشخص"
+def instrument_type(isin: str | None, name: str = "", sector: str = "", sub_sector: str = "") -> str:
+    """Broad family (سهام، صندوق، اوراق، …); see :func:`asset_class.classify` for the precise kind."""
+    from .asset_class import classify
+
+    return classify(isin, name, "", sector, sub_sector).group
 
 
 def _normalize_fa(text: str) -> str:

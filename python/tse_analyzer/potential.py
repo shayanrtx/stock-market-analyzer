@@ -20,14 +20,18 @@ against ``RISK_FREE_ANNUAL`` rather than against zero.
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass, field as dc_field
+from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from . import indicators as ind
 from .analysis import StockAnalysis, fetch_and_analyze, money_flow
 from .client import TsetmcClient, TsetmcError, field
+from .stats import wilson
 
 INFLATION_ANNUAL = 0.35  # hurdle: a return below this is a real loss
 RISK_FREE_ANNUAL = 0.30  # approx. yield of Iranian fixed-income funds
@@ -38,6 +42,24 @@ ANALOG_SPACING = 10  # trading days between analog samples, so one episode isn't
 
 
 CATEGORIES = ("فنی", "جریان پول", "بنیادی", "آماری")
+
+# Every factor name :func:`assess` can produce. Calibrated multipliers (research/calibrate.py,
+# config/weights.json in the PHP app) are keyed by these exact strings.
+FACTOR_NAMES = (
+    "روند اولیه (Primary trend)",
+    "روند ثانویه",
+    "مومنتوم واقعی ۶ ماهه",
+    "قدرت نسبی در برابر شاخص",
+    "موقعیت در دامنه‌ی ۵۲ هفته",
+    "کشش قیمت",
+    "انباشت / توزیع حجم",
+    "رژیم نوسان",
+    "جریان پول حقیقی (۲۰ جلسه)",
+    "جریان پول حقیقی (امروز)",
+    "نقدشوندگی",
+    "ارزش‌گذاری",
+    "الگوهای مشابه تاریخی",
+)
 
 
 @dataclass
@@ -63,6 +85,7 @@ class Potential:
     flow: dict
     adjustments: list[tuple[str, float]] = dc_field(default_factory=list)
     sector: str = ""
+    sub_sector: str = ""
     scenarios: dict[str, float] | None = None  # bear/base/bull price in ~3 months
     probability_up: float | None = None
     summary: str = ""
@@ -97,6 +120,46 @@ def gregorian_to_jalali(gy: int, gm: int, gd: int) -> tuple[int, int, int]:
     else:
         jm, jd = 7 + (days - 186) // 30, 1 + (days - 186) % 30
     return jy, jm, jd
+
+
+def jalali_to_gregorian(jy: int, jm: int, jd: int) -> tuple[int, int, int]:
+    """Convert a Persian (Jalali) date to the Gregorian calendar (same algorithm as Jalali.php)."""
+    jy += 1595
+    days = (-355668 + 365 * jy + (jy // 33) * 8 + ((jy % 33) + 3) // 4 + jd
+            + ((jm - 1) * 31 if jm < 7 else (jm - 7) * 30 + 186))
+    gy = 400 * (days // 146097)
+    days %= 146097
+    if days > 36524:
+        days -= 1
+        gy += 100 * (days // 36524)
+        days %= 36524
+        if days >= 365:
+            days += 1
+    gy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        gy += (days - 1) // 365
+        days = (days - 1) % 365
+    gd = days + 1
+    leap = (gy % 4 == 0 and gy % 100 != 0) or gy % 400 == 0
+    months = [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    gm = 1
+    for length in months:
+        if gd <= length:
+            break
+        gd -= length
+        gm += 1
+    return gy, gm, gd
+
+
+def jalali_date(jy: int, jm: int, jd: int) -> pd.Timestamp | None:
+    """Gregorian timestamp of a Jalali date, or None if it is not a real calendar date."""
+    if not (1 <= jm <= 12 and 1 <= jd <= (31 if jm <= 6 else 30)):
+        return None
+    gy, gm, gd = jalali_to_gregorian(jy, jm, jd)
+    if gregorian_to_jalali(gy, gm, gd) != (jy, jm, jd):  # e.g. 30 Esfand of a non-leap year
+        return None
+    return pd.Timestamp(gy, gm, gd)
 
 
 def jalali_str(ts: pd.Timestamp) -> str:
@@ -138,43 +201,58 @@ def history_stats(df: pd.DataFrame) -> dict:
     }
 
 
-def find_analogs(df: pd.DataFrame, horizon: int = HORIZON) -> dict | None:
-    """Past days whose technical state resembles today, and their forward returns.
+def similar_days(df: pd.DataFrame, horizon: int = HORIZON) -> list[int] | None:
+    """Positions of past sessions in the same technical state as the latest one.
 
-    State = above/below SMA200, RSI within ±10, distance from the 1-year high within ±10 points.
+    State = same side of SMA200, RSI within ±10, distance from the 1-year high within ±10
+    points; samples are at least ``ANALOG_SPACING`` sessions apart. None when the history is
+    too short to judge (same rule as ``HistoricalStudy::similarDays`` in the PHP app).
     """
-    close = df["close"]
-    if len(close) < 200 + horizon + ANALOG_MIN_SAMPLES:
+    close_s = df["close"]
+    if len(close_s) < 200 + horizon + ANALOG_MIN_SAMPLES:
         return None
-    sma200 = ind.sma(close, 200)
-    rsi = ind.rsi(close, 14)
-    dd = (close / close.rolling(TRADING_DAYS, min_periods=60).max() - 1) * 100
+    close = close_s.to_numpy(dtype=float)
+    sma200 = ind.sma(close_s, 200).to_numpy(dtype=float)
+    rsi = ind.rsi(close_s, 14).to_numpy(dtype=float)
+    dd = ((close_s / close_s.rolling(TRADING_DAYS, min_periods=60).max() - 1) * 100).to_numpy(dtype=float)
     now = len(close) - 1
-    if any(pd.isna(x.iloc[now]) for x in (sma200, rsi, dd)):
+    if np.isnan(sma200[now]) or np.isnan(rsi[now]) or np.isnan(dd[now]):
         return None
-    above_now = close.iloc[now] > sma200.iloc[now]
+    above_now = close[now] > sma200[now]
+    idx = np.arange(200, now - horizon + 1)
+    with np.errstate(invalid="ignore"):
+        match = (~np.isnan(rsi[idx]) & ~np.isnan(dd[idx]) & ((close[idx] > sma200[idx]) == above_now)
+                 & (np.abs(rsi[idx] - rsi[now]) <= 10) & (np.abs(dd[idx] - dd[now]) <= 10))
+    days, last_taken = [], -ANALOG_SPACING
+    for i in idx[match]:
+        if i - last_taken >= ANALOG_SPACING:
+            days.append(int(i))
+            last_taken = int(i)
+    return days
 
-    forward, dates, last_taken = [], [], -ANALOG_SPACING
-    for i in range(200, now - horizon + 1):
-        if i - last_taken < ANALOG_SPACING or pd.isna(rsi.iloc[i]) or pd.isna(dd.iloc[i]):
-            continue
-        if ((close.iloc[i] > sma200.iloc[i]) == above_now
-                and abs(rsi.iloc[i] - rsi.iloc[now]) <= 10
-                and abs(dd.iloc[i] - dd.iloc[now]) <= 10):
-            forward.append(close.iloc[i + horizon] / close.iloc[i] * 100 - 100)
-            dates.append(jalali_str(close.index[i]))
-            last_taken = i
+
+def find_analogs(df: pd.DataFrame, horizon: int = HORIZON) -> dict | None:
+    """Past days whose technical state resembles today (:func:`similar_days`) and their forward returns."""
+    days = similar_days(df, horizon)
+    if days is None:
+        return None
+    close = df["close"].to_numpy(dtype=float)
+    forward = [close[i + horizon] / close[i] * 100 - 100 for i in days]
+    dates = [jalali_str(df.index[i]) for i in days]
     if len(forward) < ANALOG_MIN_SAMPLES:
         return {"samples": len(forward)}
     fwd = pd.Series(forward)
     hurdle = _hurdle(horizon)
+    wins, beats = int((fwd > 0).sum()), int((fwd > hurdle).sum())
     return {
         "samples": len(fwd),
         "horizon_days": horizon,
         "mean_pct": float(fwd.mean()),
         "median_pct": float(fwd.median()),
         "win_rate": float((fwd > 0).mean()),
+        "win_rate_ci": wilson(wins, len(fwd)),  # 95% Wilson interval
         "beat_inflation_rate": float((fwd > hurdle).mean()),
+        "beat_inflation_ci": wilson(beats, len(fwd)),
         "hurdle_pct": hurdle,
         "best_pct": float(fwd.max()),
         "worst_pct": float(fwd.min()),
@@ -182,6 +260,62 @@ def find_analogs(df: pd.DataFrame, horizon: int = HORIZON) -> dict | None:
         "p80_pct": float(fwd.quantile(0.8)),
         "dates": dates[-5:],
         "forward": [float(x) for x in fwd],
+    }
+
+
+def trade_odds(df: pd.DataFrame, target_pct: float, stop_pct: float, horizon: int = 42,
+               side: int = 1) -> dict | None:
+    """Odds of a trade plan (port of ``HistoricalStudy::tradeOdds``).
+
+    From each comparable past session (:func:`similar_days`; all sessions of the last ~3 years,
+    every 5th, when fewer than 12 are similar), did price reach +target before -stop within
+    ``horizon`` sessions? Daily highs/lows are used and a day touching both counts as a loss.
+    ``side=-1`` asks the same for a fall (target below, stop above).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float) if "high" in df.columns else close
+    low = df["low"].to_numpy(dtype=float) if "low" in df.columns else close
+    n = len(close)
+    days = similar_days(df, horizon) or []
+    conditioned = len(days) >= ANALOG_MIN_SAMPLES * 2
+    if not conditioned:
+        days = list(range(max(20, n - 1 - 750), n - horizon, 5))
+    if len(days) < ANALOG_MIN_SAMPLES:
+        return None
+    wins = losses = 0
+    timeout_returns, days_to_target = [], []
+    for i in days:
+        entry = close[i]
+        up = entry * (1 + side * target_pct / 100)
+        down = entry * (1 - side * stop_pct / 100)
+        outcome = None
+        for j in range(i + 1, i + horizon + 1):
+            hit_stop = low[j] <= down if side > 0 else high[j] >= down
+            hit_target = high[j] >= up if side > 0 else low[j] <= up
+            if hit_stop:
+                outcome = "loss"
+                break
+            if hit_target:
+                outcome = "win"
+                days_to_target.append(j - i)
+                break
+        if outcome == "win":
+            wins += 1
+        elif outcome == "loss":
+            losses += 1
+        else:
+            timeout_returns.append(side * (close[i + horizon] / entry - 1) * 100)
+    total = len(days)
+    return {
+        "samples": total,
+        "conditioned": conditioned,
+        "horizon_days": horizon,
+        "win_rate": wins / total,
+        "win_rate_ci": wilson(wins, total),
+        "loss_rate": losses / total,
+        "timeout_rate": len(timeout_returns) / total,
+        "avg_days_to_target": sum(days_to_target) / len(days_to_target) if days_to_target else None,
+        "expectancy_pct": (wins * target_pct - losses * stop_pct + sum(timeout_returns)) / total,
     }
 
 
@@ -255,8 +389,16 @@ def assess(
     flow_records: list[dict] | None = None,
     adjustments: list[tuple[pd.Timestamp, float]] | None = None,
     benchmark: pd.Series | None = None,
+    risk_free: float | None = None,
+    multipliers: dict[str, float] | None = None,
 ) -> Potential:
-    """``history`` must already be adjusted (see :func:`client.adjust_prices`)."""
+    """``history`` must already be adjusted (see :func:`client.adjust_prices`).
+
+    ``risk_free``: annual rate for the earnings-yield test (default ``RISK_FREE_ANNUAL``; see
+    :mod:`rates` for the treasury-bill yield). ``multipliers``: calibrated factor-weight
+    multipliers by factor name (see :func:`load_multipliers`); missing names keep weight x1.
+    """
+    rf = RISK_FREE_ANNUAL if risk_free is None else risk_free
     close = history["close"]
     price = float(close.iloc[-1])
     sma50, sma200 = ind.sma(close, 50), ind.sma(close, 200)
@@ -406,9 +548,9 @@ def assess(
             parts.append(f"P/E={val['pe']:.1f} در برابر P/E صنعت {val['sector_pe']:.1f} "
                          f"({'ارزان‌تر' if ratio < 1 else 'گران‌تر'} از صنعت به میزان {abs(1 - ratio) * 100:.0f}٪)")
         ey = 100 / val["pe"]
-        spread = ey - RISK_FREE_ANNUAL * 100
+        spread = ey - rf * 100
         scores.append(_clip(spread / 15))
-        parts.append(f"بازده سود (E/P) {ey:.0f}٪ در برابر نرخ بدون ریسک {RISK_FREE_ANNUAL * 100:.0f}٪ "
+        parts.append(f"بازده سود (E/P) {ey:.0f}٪ در برابر نرخ بدون ریسک {rf * 100:.0f}٪ "
                      f"({'صرف ریسک مثبت' if spread > 0 else 'صرف ریسک منفی؛ اوراق درآمد ثابت جذاب‌ترند'})")
         factors.append(Factor("ارزش‌گذاری", sum(scores) / len(scores), 1.5, "؛ ".join(parts) + ".", "بنیادی"))
 
@@ -416,13 +558,18 @@ def assess(
     if analogs and analogs.get("mean_pct") is not None:
         a = analogs
         score = 0.5 * _clip((a["mean_pct"] - a["hurdle_pct"]) / 15) + 0.5 * _clip((a["beat_inflation_rate"] - 0.5) * 4)
+        ci = a.get("win_rate_ci")
         factors.append(Factor(
             "الگوهای مشابه تاریخی", score, 2.0,
             f"در {a['samples']} موقعیت تاریخی با ساختار فنی مشابه، بازده ۳ ماه بعد به‌طور میانه "
-            f"{a['median_pct']:+.1f}٪ بوده؛ {a['win_rate'] * 100:.0f}٪ موارد مثبت و "
+            f"{a['median_pct']:+.1f}٪ بوده؛ {a['win_rate'] * 100:.0f}٪ موارد مثبت"
+            + (f" (بازه‌ی اطمینان ۹۵٪: {ci[0] * 100:.0f} تا {ci[1] * 100:.0f}٪)" if ci else "") + " و "
             f"{a['beat_inflation_rate'] * 100:.0f}٪ بالاتر از تورم دوره بسته شده‌اند "
             f"(بازه‌ی ۲۰ تا ۸۰ درصدی: {a['p20_pct']:+.0f}٪ تا {a['p80_pct']:+.0f}٪).", "آماری"))
 
+    if multipliers:
+        for f in factors:
+            f.weight *= max(0.0, float(multipliers.get(f.name, 1.0)))
     total_w = sum(f.weight for f in factors)
     for f in factors:
         f.contribution = 50 * f.score * f.weight / total_w if total_w else 0.0
@@ -442,6 +589,7 @@ def assess(
         flow=flow,
         adjustments=[(jalali_str(d), f) for d, f in (adjustments or [])],
         sector=str(field(field(info or {}, "sector") or {}, "lSecVal", default="")).strip(),
+        sub_sector=str(field(field(info or {}, "subSector") or {}, "lSoSecVal", default="")).strip(),
         scenarios=scenarios,
         probability_up=probability_up,
     )
@@ -450,7 +598,8 @@ def assess(
 
 
 def fetch_potential(
-    client: TsetmcClient, symbol: str, on_warning=None, benchmark: pd.Series | None = None
+    client: TsetmcClient, symbol: str, on_warning=None, benchmark: pd.Series | None = None,
+    risk_free: float | None = None, multipliers: dict[str, float] | None = None,
 ) -> tuple[StockAnalysis, Potential, pd.DataFrame]:
     """Full-history analysis plus growth potential for one symbol."""
     a, history = fetch_and_analyze(client, symbol, 0, on_warning=on_warning)
@@ -465,9 +614,21 @@ def fetch_potential(
 
     info = optional(client.instrument_info, {})
     flow_records = optional(client.client_type_history, [])
-    pot = assess(history, info, a.money_flow, flow_records, a.adjustments, benchmark)
+    pot = assess(history, info, a.money_flow, flow_records, a.adjustments, benchmark, risk_free, multipliers)
     pot.flow_records = flow_records
     return a, pot, history
+
+
+def load_multipliers(path: str | Path) -> dict[str, float] | None:
+    """Factor multipliers from a calibration file (``research calibrate --out``); None if absent."""
+    p = Path(path)
+    if not p.exists():
+        return None
+    data = json.loads(p.read_text(encoding="utf-8"))
+    factors = data.get("factors") if isinstance(data, dict) else None
+    if not isinstance(factors, dict):
+        return None
+    return {str(k): float(v) for k, v in factors.items() if isinstance(v, (int, float))}
 
 
 def _levels(df: pd.DataFrame, price: float, s200: float | None, stats: dict, atr: float | None) -> dict:
@@ -528,9 +689,11 @@ def _summary(p: Potential) -> str:
     if weak:
         parts.append("مهم‌ترین ریسک‌ها: " + "، ".join(weak) + ".")
     if p.probability_up is not None and p.scenarios:
+        ci = (p.analogs or {}).get("win_rate_ci")
         parts.append(
             f"بر پایه‌ی رفتار تاریخی، احتمال بالاتر بودن قیمت پس از ۳ ماه حدود {p.probability_up * 100:.0f}٪ است "
-            f"و سناریوی پایه قیمت {p.scenarios['base']:,.0f} ریال را نشان می‌دهد "
+            + (f"(بازه‌ی اطمینان ۹۵٪: {ci[0] * 100:.0f} تا {ci[1] * 100:.0f}٪) " if ci else "")
+            + f"و سناریوی پایه قیمت {p.scenarios['base']:,.0f} ریال را نشان می‌دهد "
             f"(بدبینانه {p.scenarios['bear']:,.0f}، خوش‌بینانه {p.scenarios['bull']:,.0f}).")
     lv = p.levels
     if lv.get("stop"):

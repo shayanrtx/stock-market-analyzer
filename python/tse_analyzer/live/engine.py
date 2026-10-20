@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from typing import Callable, Iterable
 
 from ..client import FLOW_BOURSE, TEDPIX, TseGatewayClient, TsetmcClient, TsetmcError, field
+from ..regime import BUY_MIN_SCORE, Regime, breadth_from_watch, market_regime
 from .feed import build_context, fetch_snapshot, fetch_thresholds
 from .models import Insight, Snapshot, SymbolContext
 from .rules import REGISTRY, Rule
@@ -57,6 +58,9 @@ class LiveEngine:
         self.feed: deque[Insight] = deque(maxlen=MAX_FEED)
         self.errors: dict[str, str] = {}
         self.market: dict = {}
+        self.regime: Regime | None = None  # computed once a day (TEDPIX vs SMA200 + breadth)
+        self._regime_day: str | None = None
+        self._regime_announced: str | None = None
         self.phase = Phase.CLOSED
         self.last_tick: datetime | None = None
         self._last_fired: dict[str, tuple[datetime, int]] = {}
@@ -94,6 +98,7 @@ class LiveEngine:
         market_open = self._market_open()
         self.phase = phase_at(now, market_open)
         self._new_day(now)
+        self._ensure_regime(now)
         self._ensure_contexts(now)
 
         with ThreadPoolExecutor(max_workers=self.workers) as pool:
@@ -130,6 +135,10 @@ class LiveEngine:
             if self.phase not in r.phases:
                 continue
             for ins in r.fn(hist, ctx, now):
+                if ins.direction > 0 and ins.severity >= 2 and ctx.potential_score is not None:
+                    # A strength trigger is a buy candidate only above today's regime-dependent threshold.
+                    ins.metrics["buy_threshold"] = self.buy_threshold
+                    ins.metrics["buy_candidate"] = ctx.potential_score >= self.buy_threshold
                 if self._should_fire(ins, now):
                     out.append(ins)
         return out
@@ -172,6 +181,28 @@ class LiveEngine:
             if sym not in self.thresholds:
                 self.thresholds[sym] = fetch_thresholds(self.client, ctx.ins_code, now)
 
+    def _ensure_regime(self, now: datetime) -> None:
+        day = now.strftime("%Y%m%d")
+        if self._regime_day == day:
+            return
+        self._regime_day = day
+        try:
+            index = self.client.index_history(TEDPIX)
+        except TsetmcError:
+            index = None
+        breadth = None
+        if self.gateway:
+            try:
+                breadth = breadth_from_watch(self.gateway.market_watch("Cash"))
+            except TsetmcError:
+                breadth = None
+        self.regime = market_regime(index if index is not None and len(index) else None, breadth)
+
+    @property
+    def buy_threshold(self) -> float:
+        """Minimum growth-potential score for a buy today (stricter outside a bull regime)."""
+        return self.regime.buy_threshold if self.regime else BUY_MIN_SCORE
+
     def _market_open(self) -> bool | None:
         """tse.ir reports whether the market is open today (holidays); None if unknown."""
         if not self.gateway:
@@ -197,13 +228,23 @@ class LiveEngine:
         change = float(field(total, "xVarIdxJRfV", default=0) or 0)
         self.market = {"index": field(total, "xDrNivJIdx004"), "change": change,
                        "name": str(total.get("lVal30", "")).strip()}
-        if not self.phase.is_live or abs(change) < INDEX_MOVE:
+        if not self.phase.is_live:
             return []
-        ins = Insight(now, "بازار", "market", 1 if change > 0 else -1, 2 if abs(change) < 2 else 3,
-                      "رشد قوی شاخص کل" if change > 0 else "افت قابل توجه شاخص کل",
-                      f"شاخص کل {change:+.2f}٪ تغییر کرده است؛ جهت کلی بازار را در تصمیم‌های امروز لحاظ کنید.",
-                      {"change": change})
-        return [ins] if self._should_fire(ins, now) else []
+        out = []
+        day = now.strftime("%Y%m%d")
+        if self.regime and self.regime.state in ("bear", "neutral") and self._regime_announced != day:
+            self._regime_announced = day
+            out.append(Insight(now, "بازار", "regime", -1, 2 if self.regime.state == "bear" else 1,
+                               f"رژیم بازار: {self.regime.label}", self.regime.detail,
+                               {"buy_threshold": self.regime.buy_threshold}))
+        if abs(change) >= INDEX_MOVE:
+            ins = Insight(now, "بازار", "market", 1 if change > 0 else -1, 2 if abs(change) < 2 else 3,
+                          "رشد قوی شاخص کل" if change > 0 else "افت قابل توجه شاخص کل",
+                          f"شاخص کل {change:+.2f}٪ تغییر کرده است؛ جهت کلی بازار را در تصمیم‌های امروز لحاظ کنید.",
+                          {"change": change})
+            if self._should_fire(ins, now):
+                out.append(ins)
+        return out
 
     # ----------------------------------------------------------------- views
 
@@ -236,6 +277,8 @@ class LiveEngine:
                 "updated": self.last_tick.strftime("%H:%M:%S") if self.last_tick else None,
                 "interval": self.interval,
                 "market": self.market,
+                "regime": self.regime.to_dict() if self.regime else None,
+                "buy_threshold": self.buy_threshold,
                 "symbols": rows,
                 "insights": [i.to_dict() for i in self.feed],
                 "errors": {k: v for k, v in self.errors.items() if k == "engine"},

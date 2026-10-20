@@ -98,7 +98,8 @@ def money_flow(client_type: dict, price: float | None) -> dict[str, float | None
 
     buy_i, sell_i = g("buy_I_Volume"), g("sell_I_Volume")
     buy_n, sell_n = g("buy_N_Volume"), g("sell_N_Volume")
-    buy_count, sell_count = g("buy_CountI"), g("sell_CountI")
+    # Today's record names the counts buy_CountI; the daily history names them buy_I_Count.
+    buy_count, sell_count = g("buy_CountI", "buy_I_Count"), g("sell_CountI", "sell_I_Count")
     if not (buy_i or sell_i or buy_n or sell_n):
         return {}
 

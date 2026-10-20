@@ -1,4 +1,8 @@
-"""Whole-market screens: smart-money inflow (cdn) and top movers (webgw)."""
+"""Whole-market screens: smart-money inflow (cdn), top movers (webgw) and the market regime.
+
+The regime (:mod:`regime`) sets how strict a buy must be: outside a bull market the minimum
+growth-potential score for a buy is raised (``Regime.buy_threshold``).
+"""
 
 from __future__ import annotations
 
@@ -6,6 +10,7 @@ from dataclasses import dataclass
 
 from .analysis import money_flow
 from .client import TseGatewayClient, TsetmcClient, TsetmcError, field
+from .regime import Regime, breadth_from_watch, market_regime
 
 
 @dataclass
@@ -31,7 +36,7 @@ def smart_money(
     """
     candidates = []
     for rec in client.client_type_all():
-        buyers = field(rec, "buy_CountI", default=0) or 0
+        buyers = field(rec, "buy_CountI", "buy_I_Count", default=0) or 0
         if buyers < min_buyers:
             continue
         flow = money_flow(rec, None)
@@ -92,3 +97,18 @@ def top_movers(
             rows.append(row)
     rows.sort(key=lambda r: getattr(r, by), reverse=not ascending)
     return rows[:top]
+
+
+def regime(client: TsetmcClient, gateway: TseGatewayClient | None = None, watch: list[dict] | None = None) -> Regime:
+    """TEDPIX against its 200-day average, refined by today's breadth from the official market watch."""
+    try:
+        index = client.index_history()
+    except TsetmcError:
+        index = None
+    if watch is None and gateway is not None:
+        try:
+            watch = gateway.market_watch("Cash")
+        except TsetmcError:
+            watch = None
+    breadth = breadth_from_watch(watch) if watch else None
+    return market_regime(index if index is not None and len(index) else None, breadth)

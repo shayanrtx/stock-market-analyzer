@@ -268,9 +268,10 @@ def money_flow(flow: pd.DataFrame, close: pd.Series) -> dict:
 
 # --------------------------------------------------------------- portfolio
 
-def equity_vs_benchmark(equity: pd.Series, benchmark: pd.Series | None, drawdown: pd.Series) -> dict:
+def equity_vs_benchmark(equity: pd.Series, benchmark: pd.Series | None, drawdown: pd.Series,
+                        name: str = "سبد (ترکیب فعلی)") -> dict:
     dates = _dates(equity.index)
-    series = [{"name": "سبد (ترکیب فعلی)", "type": "line", "data": [_r(v) for v in equity], "showSymbol": False,
+    series = [{"name": name, "type": "line", "data": [_r(v) for v in equity], "showSymbol": False,
                "lineStyle": {"width": 2, "color": ACCENT}, "itemStyle": {"color": ACCENT},
                "areaStyle": {"color": "rgba(37,99,235,.06)"}}]
     if benchmark is not None:

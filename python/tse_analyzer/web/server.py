@@ -6,14 +6,16 @@ import json
 import mimetypes
 import sys
 import threading
+import time
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .. import portfolio as pf
-from .. import report
+from .. import rates, report
 from ..client import TseGatewayClient, TsetmcClient, TsetmcError
+from ..fx import TgjuClient
 from ..live import LiveEngine
 from ..potential import fetch_potential
 from . import pages
@@ -27,12 +29,41 @@ class App:
     """Shared state for request handlers: API clients, file paths and the live engine."""
 
     def __init__(self, cdn: TsetmcClient, gw: TseGatewayClient, portfolio_path: Path, watchlist_path: Path,
-                 live_interval: float = 45.0) -> None:
-        self.cdn, self.gw = cdn, gw
-        self.portfolio_path, self.watchlist_path = portfolio_path, watchlist_path
+                 live_interval: float = 45.0, ledger_path: Path | None = None, fx: TgjuClient | None = None,
+                 risk_free: str | float = "auto") -> None:
+        self.cdn, self.gw, self.fx = cdn, gw, fx
+        self.portfolio_path, self.watchlist_path, self.ledger_path = portfolio_path, watchlist_path, ledger_path
         self.live_interval = live_interval
+        self.risk_free_setting = risk_free
         self._engine: LiveEngine | None = None
         self._lock = threading.Lock()
+        self._cached: dict[str, tuple[float, object]] = {}
+
+    def _memo(self, key: str, ttl: float, fn):
+        hit = self._cached.get(key)
+        if hit and time.time() - hit[0] < ttl:
+            return hit[1]
+        value = fn()
+        self._cached[key] = (time.time(), value)
+        return value
+
+    def risk_free(self) -> float:
+        """Treasury-bill yield (or the configured rate), refreshed every 6 hours."""
+        return self._memo("rf", 6 * 3600, lambda: rates.resolve(self.risk_free_setting, self.cdn,
+                                                                 cache_dir=self.cdn.cache_dir).rate)
+
+    def usd(self):
+        """Free-market dollar history from tgju, refreshed hourly; None when unavailable."""
+        if self.fx is None:
+            return None
+
+        def load():
+            try:
+                series = self.fx.history()
+                return series if len(series) else None
+            except (TsetmcError, ValueError):
+                return None
+        return self._memo("usd", 3600, load)
 
     def watchlist(self) -> list[str]:
         if not self.watchlist_path.exists():
@@ -74,9 +105,10 @@ def make_handler(app: App):
             if path.startswith("/static/"):
                 return self._static(path[len("/static/"):])
             if path in ("/", "/portfolio"):
-                return self._html(pages.portfolio_page(app.cdn, app.portfolio_path))
+                return self._html(pages.portfolio_page(app.cdn, app.portfolio_path, app.ledger_path,
+                                                       app.risk_free(), app.usd()))
             if path == "/stock" and q.get("symbol"):
-                return self._html(pages.stock_page(app.cdn, q["symbol"].strip()))
+                return self._html(pages.stock_page(app.cdn, q["symbol"].strip(), app.risk_free(), app.usd()))
             if path == "/market":
                 return self._html(pages.market_page(app.cdn, app.gw))
             if path == "/live":
@@ -88,13 +120,13 @@ def make_handler(app: App):
                 return self._json(app.engine().state())
             if path == "/api/stock" and q.get("symbol"):
                 try:
-                    a, p, _ = fetch_potential(app.cdn, q["symbol"].strip())
+                    a, p, _ = fetch_potential(app.cdn, q["symbol"].strip(), risk_free=app.risk_free())
                 except TsetmcError as exc:
                     return self._json({"error": str(exc)}, 502)
                 return self._json({"analysis": report.stock_dict(a), "potential": asdict(p)})
             if path == "/api/portfolio":
                 try:
-                    r = pf.analyze_portfolio(app.cdn, pf.load_holdings(app.portfolio_path))
+                    r = pf.analyze_portfolio(app.cdn, pf.load_holdings(app.portfolio_path), risk_free=app.risk_free())
                 except TsetmcError as exc:
                     return self._json({"error": str(exc)}, 502)
                 return self._json({"nav": r.nav, "cash": r.cash, "day_pnl": r.day_pnl, "metrics": r.metrics,
@@ -165,8 +197,10 @@ def _json_default(obj):
 
 def serve(host: str, port: int, cdn: TsetmcClient, gw: TseGatewayClient,
           portfolio_path: str | Path = "portfolio.csv", watchlist_path: str | Path = "watchlist.txt",
-          live_interval: float = 45.0) -> None:
-    app = App(cdn, gw, Path(portfolio_path), Path(watchlist_path), live_interval)
+          live_interval: float = 45.0, ledger_path: str | Path | None = "ledger.csv", fx: TgjuClient | None = None,
+          risk_free: str | float = "auto") -> None:
+    app = App(cdn, gw, Path(portfolio_path), Path(watchlist_path), live_interval,
+              Path(ledger_path) if ledger_path else None, fx, risk_free)
     server = ThreadingHTTPServer((host, port), make_handler(app))
     print(f"داشبورد آماده است: http://{host}:{port}  (Ctrl+C برای خروج)")
     try:

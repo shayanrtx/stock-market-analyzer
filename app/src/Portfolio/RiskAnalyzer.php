@@ -92,6 +92,15 @@ final class RiskAnalyzer
             'cvar95_1d_pct' => $tail ? -array_sum($tail) / count($tail) * 100 : null,
             'risk_free_pct' => $this->riskFreeAnnual * 100,
         ];
+        // Volatility targeting: hold less when the portfolio is more volatile than the market usually is.
+        $recent = array_slice($rets, -60);
+        $m['volatility_recent_pct'] = count($recent) >= 20 ? Stats::std($recent) * sqrt(self::TRADING_DAYS) * 100 : null;
+        if (count($benchmark) > 250) {
+            ksort($benchmark);
+            $m['benchmark_volatility_pct'] = Stats::std(Stats::returns(array_values($benchmark))) * sqrt(self::TRADING_DAYS) * 100;
+        }
+        $m['target_exposure_pct'] = !empty($m['volatility_recent_pct']) && !empty($m['benchmark_volatility_pct'])
+            ? min(100.0, $m['benchmark_volatility_pct'] / $m['volatility_recent_pct'] * 100) : null;
 
         // Benchmark on the same dates (forward-filled).
         $bench = null;

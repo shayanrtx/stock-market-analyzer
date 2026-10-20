@@ -86,8 +86,12 @@ $tiles = [
     ['var', 'VaR روزانه ۹۵٪', $v->money($var), $v->pct(-$m['var95_1d_pct'], 2) . ' · CVaR ' . $v->pct(isset($m['cvar95_1d_pct']) ? -$m['cvar95_1d_pct'] : null, 2)],
     ['effective_positions', 'تعداد مؤثر نمادها', $v->num($conc['effective_positions'] ?? null, 1), 'از ' . count($a['positions']) . ' نماد · HHI ' . $v->num(($conc['hhi'] ?? 0) * 10000, 0)],
 ];
+if (isset($m['target_exposure_pct'])) {
+    $tiles[] = ['vol_target', 'سطح ریسک پیشنهادی', $v->pct($m['target_exposure_pct'], 0, false, false),
+        'نوسان ۶۰ جلسه‌ی اخیر ' . $v->pct($m['volatility_recent_pct'], 0, false, false) . ' · میانگین بلندمدت شاخص ' . $v->pct($m['benchmark_volatility_pct'], 0, false, false)];
+}
 ?>
-<section class="kpis small" style="--cols:<?= count($tiles) ?>" data-help="risk_kpis">
+<section class="kpis small" style="--cols:<?= \Sabadgardan\View\View::kpiColumns(count($tiles)) ?>" data-help="risk_kpis">
   <?php foreach ($tiles as [$key, $label, $value, $sub]): ?>
     <div class="kpi"><div class="label"><?= $label ?> <?= $v->help($key) ?></div><div class="value"><?= $value ?></div><div class="sub"><?= $sub ?></div></div>
   <?php endforeach; ?>

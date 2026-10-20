@@ -147,6 +147,9 @@ echo $v->card('ترکیب دارایی‌ها', $v->chart(Charts::donut($alloc),
       ['تورم (فرض تنظیمات)', $ret['inflation'], ''],
       ['نرخ بدون ریسک (با نرخ امروز)', $ret['risk_free'], ''],
   ];
+  if ($ret['usd']['total'] !== null) {
+      $cmp[] = ['دلار آزاد', $ret['usd'], ''];
+  }
   $twrTotal = $ret['twr']['total']; ?>
   <div class="table-wrap"><table class="returns">
     <thead><tr><th></th><th>کل دوره</th><th>سالانه</th><th>سبد بهتر بوده؟</th></tr></thead>
@@ -163,6 +166,11 @@ echo $v->card('ترکیب دارایی‌ها', $v->chart(Charts::donut($alloc),
         <td><?= $ret['xirr'] !== null ? $v->pct($ret['xirr'] * 100, 1, true, false) : '<span class="faint">-</span>' ?></td><td><span class="faint">-</span></td></tr>
     </tbody>
   </table></div>
+  <?php if ($ret['twr_in_usd'] !== null): ?>
+    <p style="font-size:13px;margin:10px 0 0">بازده سبد به دلار: <?= $v->pct($ret['twr_in_usd'] * 100, 1) ?>
+      <span class="faint">— <?= $ret['twr_in_usd'] >= 0 ? 'ارزش دلاری سرمایه حفظ شده و بیشتر هم شده است.'
+          : ($ret['twr']['total'] > 0 ? 'به ریال سود داده ولی ارزش دلاری سرمایه کم شده است.' : 'ارزش دلاری سرمایه کم شده است.') ?></span></p>
+  <?php endif; ?>
   <p class="faint" style="font-size:12px;margin:8px 0 0">از اولین خرید (<?= $v->e($v->jdate($ret['start'])) ?>) تا <?= $v->e($v->jdate($ret['end'])) ?>، <?= $v->num($ret['days']) ?> روز؛ پس از کسر کارمزدها.
     <?= $ret['twr']['annual'] === null ? 'ستون سالانه و بازده پولی برای دوره‌ی کمتر از ۶ ماه نمایش داده نمی‌شود، چون عدد سالانه‌ی دوره‌های کوتاه گمراه‌کننده است.' : '' ?></p>
   <?php $table = (string) ob_get_clean();

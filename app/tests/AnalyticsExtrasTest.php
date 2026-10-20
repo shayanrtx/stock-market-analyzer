@@ -76,6 +76,39 @@ final class AnalyticsExtrasTest extends TestCase
         $this->assertNull($ret['xirr'], 'a three-week XIRR would read as thousands of percent');
     }
 
+    public function testReturnsInDollarsAndTheVolatilityTarget(): void
+    {
+        $app = $this->makeApp();
+        $uid = $app->auth()->createUser('saver', 'password1', 'پس‌انداز', false);
+        $pid = (int) $app->portfolios()->defaultPortfolio($uid)['id'];
+        $inst = $app->market()->resolve('فملی');
+        $raw = $app->market()->bundles([$inst->insCode], ['history'])[$inst->insCode]->raw;
+        $i = $raw->count() - 400;
+        $app->portfolios()->saveTransaction($uid, $pid, new Transaction(null, 'buy', $raw->dates[$i], $inst->insCode, $inst->symbol, 1000, $raw->close[$i]));
+        $ret = $app->portfolioService()->performance($app->portfolios()->transactions($uid, $pid), $uid)['returns'];
+        $usd = $app->market()->usd();
+        $this->assertNotNull($ret['usd']['total']);
+        $this->assertNear((1 + $ret['twr']['total']) / (1 + $ret['usd']['total']) - 1, $ret['twr_in_usd'], 1e-9);
+
+        // A portfolio twice as volatile as the market usually is: hold about half.
+        $days = [];
+        $bench = [];
+        $mine = [];
+        $b = $p = 1000.0;
+        for ($k = 0; $k < 400; $k++) {
+            $d = date('Y-m-d', strtotime('2024-01-01') + $k * 86400);
+            $shock = ($k % 2 ? 1 : -1) * 0.01;
+            $b *= 1 + $shock;
+            $p *= 1 + 2 * $shock;
+            $bench[$d] = $b;
+            $mine[$d] = $p;
+        }
+        $m = (new \Sabadgardan\Portfolio\RiskAnalyzer(0.3))->analyze(['x' => $mine], $bench)['metrics'];
+        $this->assertNear(50.0, $m['target_exposure_pct'], 0.02);
+        $calm = (new \Sabadgardan\Portfolio\RiskAnalyzer(0.3))->analyze(['x' => $bench], $bench)['metrics'];
+        $this->assertNear(100.0, $calm['target_exposure_pct'], 0.01, 'the same volatility as the market: fully invested');
+    }
+
     public function testRiskParityEqualisesRiskContributions(): void
     {
         $w = RiskAnalyzer::riskParity(['a' => ['a' => 1.0, 'b' => 0.0], 'b' => ['a' => 0.0, 'b' => 4.0]]);
@@ -151,6 +184,9 @@ final class AnalyticsExtrasTest extends TestCase
             JSON_UNESCAPED_UNICODE));
         $this->assertSame(['روند ثانویه' => 1.6, 'ارزش‌گذاری' => 1.0], \Sabadgardan\Analysis\Potential\PotentialAnalyzer::loadMultipliers("$dir/w.json"),
             'out-of-range and non-numeric entries are dropped');
+        file_put_contents("$dir/rejected.json", '{"version": 1, "accepted": false, "factors": {"روند ثانویه": 1.5}}');
+        $this->assertSame([], \Sabadgardan\Analysis\Potential\PotentialAnalyzer::loadMultipliers("$dir/rejected.json"),
+            'weights that failed the out-of-sample test are never applied');
         file_put_contents("$dir/bad.json", '{"version": 2, "factors": {"روند ثانویه": 2}}');
         $this->assertSame([], \Sabadgardan\Analysis\Potential\PotentialAnalyzer::loadMultipliers("$dir/bad.json"), 'unknown format');
         $this->assertSame([], \Sabadgardan\Analysis\Potential\PotentialAnalyzer::loadMultipliers("$dir/missing.json"));

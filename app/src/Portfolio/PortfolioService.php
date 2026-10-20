@@ -204,6 +204,22 @@ final class PortfolioService
         $inflation = $this->settings->float($userId, 'inflation_annual');
         $riskFree = $this->rates?->riskFree($userId) ?? $this->settings->float($userId, 'risk_free_annual');
         $row = static fn (?float $tot) => ['total' => $tot, 'annual' => $tot === null ? null : Returns::annualise($tot, $days)];
+        // The free-market dollar over the same period: in a high-inflation economy the question is also
+        // whether the portfolio kept its value in hard currency.
+        $usd = $this->market->usd();
+        $at = static function (array $series, string $date): ?float {
+            $value = null;
+            foreach ($series as $d => $v) {
+                if ($d > $date) {
+                    break;
+                }
+                $value = $v;
+            }
+            return $value;
+        };
+        $u0 = $usd ? $at($usd, $start) : null;
+        $u1 = $usd ? $at($usd, $end) : null;
+        $usdTotal = $u0 && $u1 ? $u1 / $u0 - 1 : null;
         return [
             'start' => $start, 'end' => $end, 'days' => $days,
             'twr' => $row($total),
@@ -212,6 +228,8 @@ final class PortfolioService
             'benchmark' => $row($benchTotal),
             'inflation' => ['total' => (1 + $inflation) ** $years - 1, 'annual' => $inflation],
             'risk_free' => ['total' => (1 + $riskFree) ** $years - 1, 'annual' => $riskFree],
+            'usd' => $row($usdTotal),
+            'twr_in_usd' => $usdTotal !== null ? (1 + $total) / (1 + $usdTotal) - 1 : null,
             'index' => $twr,
             'bench_index' => $bench,
         ];

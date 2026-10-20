@@ -42,7 +42,8 @@ final class PotentialAnalyzer
             return [];
         }
         $data = json_decode((string) @file_get_contents($path), true);
-        if (!is_array($data) || ($data['version'] ?? null) !== 1 || !is_array($data['factors'] ?? null)) {
+        if (!is_array($data) || ($data['version'] ?? null) !== 1 || !is_array($data['factors'] ?? null)
+            || ($data['accepted'] ?? true) === false) {   // a calibration that failed its out-of-sample test
             return [];
         }
         $out = [];

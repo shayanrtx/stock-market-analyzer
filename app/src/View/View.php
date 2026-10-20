@@ -34,6 +34,9 @@ final class View
         if (!is_file($file)) {
             throw new \RuntimeException("View not found: $template");
         }
+        if (array_key_exists('v', $data)) {
+            throw new \LogicException('"v" is reserved for the View in templates');
+        }
         $v = $this;
         extract($this->shared + $data, EXTR_SKIP);
         ob_start();
@@ -157,6 +160,34 @@ final class View
         $json = json_encode($option, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP);
         return '<div class="chart ' . $size . '" data-chart="' . $id . '"' . $style . '></div>'
             . '<script type="application/json" id="' . $id . '">' . $json . '</script>';
+    }
+
+    public function icon(string $name, int $size = 18): string
+    {
+        return Icons::svg($name, $size);
+    }
+
+    /** "?" button that opens the glossary entry ``$key`` in a popover. */
+    public function help(string $key): string
+    {
+        $entry = Glossary::get($key);
+        if (!$entry) {
+            return '';
+        }
+        return '<button type="button" class="help-btn" data-help-key="' . $this->e($key) . '" aria-label="راهنما: '
+            . $this->e($entry['title']) . '">?</button>';
+    }
+
+    /**
+     * Card wrapper. ``$help`` adds the "?" button and makes the card a stop of the guided tour.
+     */
+    public function card(string $title, string $body, int $span = 12, string $help = '', string $hint = '',
+                         string $actions = ''): string
+    {
+        $attr = $help !== '' ? ' data-help="' . $this->e($help) . '"' : '';
+        return '<section class="card s' . $span . '"' . $attr . '><header><div class="card-title"><h2>' . $this->e($title)
+            . '</h2>' . ($help !== '' ? $this->help($help) : '') . '</div>'
+            . ($hint !== '' ? '<span class="hint">' . $this->e($hint) . '</span>' : '') . $actions . '</header>' . $body . '</section>';
     }
 
     public function csrf(): string

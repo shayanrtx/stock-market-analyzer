@@ -65,8 +65,9 @@ final class Request
             || ($this->server['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
     }
 
+    /** API routes and fetch() calls that ask for JSON (e.g. the transaction drawer). */
     public function wantsJson(): bool
     {
-        return str_starts_with($this->path, '/api/');
+        return str_starts_with($this->path, '/api/') || str_contains((string) ($this->server['HTTP_ACCEPT'] ?? ''), 'application/json');
     }
 }

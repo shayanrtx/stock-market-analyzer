@@ -35,7 +35,8 @@ final class ApiController extends Controller
         $b = $this->app->market()->bundles([$code], MarketData::PARTS_PRICE)[$code] ?? null;
         $inst = $this->app->market()->instrument($code);
         return Response::json(['last' => $b?->lastPrice(), 'close' => $b?->closePrice(), 'reference' => $b?->referencePrice(),
-                               'type' => $inst?->type()]);
+                               'type' => $inst?->type(), 'class' => $inst?->assetClass()->label(),
+                               'fee_class' => $inst?->assetClass()->feeClass() ?? 'stock']);
     }
 
     /** Live monitor: runs a cycle if due, then returns the user's view. */

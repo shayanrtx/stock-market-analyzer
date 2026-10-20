@@ -19,6 +19,12 @@ final class PortfolioController extends Controller
         return $id === '' ? $repo->defaultPortfolio($this->userId()) : $repo->portfolio($this->userId(), (int) $id);
     }
 
+    /** @return array<string, float> the user's fee rates, for the client-side fee preview */
+    private function fees(): array
+    {
+        return $this->app->settings()->fees($this->userId())->all();
+    }
+
     public function dashboard(Request $q): Response
     {
         $p = $this->portfolio($q);
@@ -30,7 +36,7 @@ final class PortfolioController extends Controller
         $performance = $valuation['transactions'] ? $service->performance($valuation['transactions']) : null;
         return $this->view($q, 'portfolio/dashboard', [
             'title' => $p['name'], 'portfolio' => $p, 'val' => $valuation, 'performance' => $performance,
-            'nav' => 'portfolio', 'tour' => true,
+            'nav' => 'portfolio', 'tour' => true, 'fees' => $this->fees(),
         ]);
     }
 
@@ -55,6 +61,12 @@ final class PortfolioController extends Controller
             return (new ErrorController($this->app))->notFound($q);
         }
         $txs = array_reverse($this->app->portfolios()->transactions($this->userId(), (int) $p['id']));
+        $symbols = array_values(array_unique(array_filter(array_map(static fn (Transaction $t) => $t->symbol, $txs))));
+        sort($symbols);
+        $classes = [];
+        foreach (array_unique(array_filter(array_map(static fn (Transaction $t) => (string) $t->insCode, $txs))) as $code) {
+            $classes[$code] = $this->app->market()->instrument($code)?->assetClass();
+        }
         $type = $q->query('type');
         $symbol = $q->query('symbol');
         if ($type !== '') {
@@ -64,13 +76,14 @@ final class PortfolioController extends Controller
             $txs = array_values(array_filter($txs, static fn (Transaction $t) => $t->symbol === $symbol));
         }
         return $this->view($q, 'portfolio/transactions', ['title' => 'تراکنش‌ها — ' . $p['name'], 'portfolio' => $p,
-            'transactions' => $txs, 'filterType' => $type, 'filterSymbol' => $symbol, 'nav' => 'transactions']);
+            'transactions' => $txs, 'symbols' => $symbols, 'classes' => $classes, 'filterType' => $type, 'filterSymbol' => $symbol, 'nav' => 'transactions',
+            'fees' => $this->fees()]);
     }
 
     public function saveTransaction(Request $q): Response
     {
         $p = $this->portfolio($q);
-        $ajax = ($q->server['HTTP_ACCEPT'] ?? '') === 'application/json';
+        $ajax = $q->wantsJson();
         if (!$p) {
             return Response::json(['ok' => false, 'error' => 'سبد پیدا نشد.'], 404);
         }
@@ -123,6 +136,29 @@ final class PortfolioController extends Controller
             $this->flash('error', 'خطی با قالب «نماد تعداد [قیمت]» پیدا نشد.');
         }
         return $this->redirect($q, "/portfolio/{$p['id']}");
+    }
+
+    /** Ledger as CSV (UTF-8 with BOM so Excel shows Persian text correctly). */
+    public function export(Request $q): Response
+    {
+        $p = $this->portfolio($q);
+        if (!$p) {
+            return (new ErrorController($this->app))->notFound($q);
+        }
+        $out = fopen('php://temp', 'w+');
+        fwrite($out, "\xEF\xBB\xBF");
+        fputcsv($out, ['تاریخ', 'تاریخ میلادی', 'نوع', 'نماد', 'تعداد', 'قیمت (ریال)', 'کارمزد (ریال)', 'مبلغ (ریال)',
+            'اثر بر نقدینگی (ریال)', 'یادداشت']);
+        foreach ($this->app->portfolios()->transactions($this->userId(), (int) $p['id']) as $t) {
+            fputcsv($out, [Jalali::fromGregorianString($t->date), $t->date, Transaction::LABELS[$t->type], $t->symbol ?? '',
+                $t->quantity ?: '', $t->price ?: '', $t->fee ?: '', $t->amount ?: '', round($t->cashFlow()), $t->note]);
+        }
+        rewind($out);
+        $csv = (string) stream_get_contents($out);
+        fclose($out);
+        $name = 'transactions-' . $p['id'] . '-' . date('Ymd') . '.csv';
+        return new Response($csv, 200, ['Content-Type' => 'text/csv; charset=utf-8',
+            'Content-Disposition' => 'attachment; filename="' . $name . '"']);
     }
 
     public function manage(Request $q): Response

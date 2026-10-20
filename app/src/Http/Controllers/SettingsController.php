@@ -19,6 +19,10 @@ final class SettingsController extends Controller
         'fee_stock_sell' => ['کارمزد فروش سهام (با مالیات)', '٪', 0, 3, 100],
         'fee_fund_buy' => ['کارمزد خرید صندوق', '٪', 0, 3, 100],
         'fee_fund_sell' => ['کارمزد فروش صندوق', '٪', 0, 3, 100],
+        'fee_bond_buy' => ['کارمزد خرید اوراق بدهی', '٪', 0, 3, 100],
+        'fee_bond_sell' => ['کارمزد فروش اوراق بدهی', '٪', 0, 3, 100],
+        'fee_option_buy' => ['کارمزد خرید اختیار معامله', '٪', 0, 3, 100],
+        'fee_option_sell' => ['کارمزد فروش اختیار معامله', '٪', 0, 3, 100],
     ];
 
     public function show(Request $q): Response
@@ -36,6 +40,7 @@ final class SettingsController extends Controller
         }
         return $this->view($q, 'settings', ['title' => 'تنظیمات حساب', 'nav' => 'settings', 'channels' => $notifier->channels($uid),
             'links' => $links, 'values' => $values, 'fields' => self::ANALYSIS_FIELDS,
+            'linkCode' => (string) $user['link_code'], 'enabled' => $notifier->enabledChannels(),
             'prefs' => ['buy' => $this->app->settings()->forUser($uid, 'notify_buy_signals') === '1',
                         'sell' => $this->app->settings()->forUser($uid, 'notify_sell_signals') === '1',
                         'min' => round($this->app->settings()->float($uid, 'notify_min_probability') * 100)]]);
@@ -108,6 +113,22 @@ final class SettingsController extends Controller
             $this->flash('success', 'پیام آزمایشی ارسال شد.');
         }
         return $this->redirect($q, '/settings');
+    }
+
+    /** Reads pending bot updates now instead of waiting for cron, so linking feels immediate. */
+    public function checkLink(Request $q): Response
+    {
+        $before = count($this->app->notifier()->channels($this->userId()));
+        try {
+            $this->app->notifier()->pollUpdates();
+        } catch (\Throwable $e) {
+            $this->flash('error', 'ارتباط با سرور پیام‌رسان برقرار نشد: ' . $e->getMessage());
+            return $this->redirect($q, '/settings#notify');
+        }
+        $linked = count($this->app->notifier()->channels($this->userId())) > $before;
+        $this->flash($linked ? 'success' : 'error', $linked ? 'حساب شما به پیام‌رسان متصل شد.'
+            : 'پیام شروع از طرف شما پیدا نشد. ابتدا روی دکمه‌ی اتصال بزنید و در ربات «شروع» را بفرستید.');
+        return $this->redirect($q, '/settings#notify');
     }
 
     public function unlink(Request $q): Response

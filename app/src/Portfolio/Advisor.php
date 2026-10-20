@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Sabadgardan\Portfolio;
 
+use Sabadgardan\Market\AssetClass;
+
 /**
  * Rule-based position actions (افزایش / نگهداری / کاهش / خروج تدریجی) with target weights.
  * Conviction comes from the growth-potential score, the primary trend, the historical odds and
@@ -24,11 +26,16 @@ final class Advisor
 
     /** @return array{action: string, label: string, target_weight: float, reasons: list<string>} */
     public function advise(float $weight, ?float $score, ?float $probabilityUp, ?bool $aboveSma200, ?float $riskShare,
-                           ?float $daysToExit, ?string $status, ?float $rewardRisk = null): array
+                           ?float $daysToExit, ?string $status, ?float $rewardRisk = null, ?AssetClass $class = null): array
     {
         $reasons = [];
         if ($status !== null && $status !== '' && $status !== 'مجاز') {
             return $this->result('halted', $weight, ["نماد «{$status}» است؛ تا بازگشایی امکان معامله نیست."]);
+        }
+        // Cash-like holdings are the portfolio's liquidity reserve, not a growth bet: no score-based action.
+        if ($class?->isCashLike()) {
+            return $this->result('hold', $weight, [$class->label() . ': بخش نقد و کم‌ریسک سبد است؛ وزن آن را بر اساس نیاز نقدینگی و '
+                . 'فرصت‌های خرید تنظیم کنید، نه بر اساس روند قیمت.']);
         }
         if ($score === null) {
             return $this->result('hold', $weight, ['داده‌ی کافی برای ارزیابی نیست.']);
@@ -39,23 +46,23 @@ final class Advisor
             $reasons[] = "امتیاز پتانسیل رشد $s و روند اولیه صعودی";
         } elseif ($score >= 50) {
             $action = 'hold';
-            $reasons[] = "امتیاز پتانسیل رشد $s؛ دلیل قاطعی برای تغییر وزن نیست";
+            $reasons[] = "امتیاز پتانسیل رشد {$s}؛ دلیل قاطعی برای تغییر وزن نیست";
         } elseif ($score >= 38) {
             $action = 'trim';
-            $reasons[] = "امتیاز پتانسیل رشد $s؛ کیفیت روند و جریان پول ضعیف است";
+            $reasons[] = "امتیاز پتانسیل رشد {$s}؛ کیفیت روند و جریان پول ضعیف است";
         } else {
             $action = 'exit';
-            $reasons[] = "امتیاز پتانسیل رشد $s؛ ریسک افت بر پتانسیل رشد می‌چربد";
+            $reasons[] = "امتیاز پتانسیل رشد {$s}؛ ریسک افت بر پتانسیل رشد می‌چربد";
         }
 
         if ($probabilityUp !== null) {
             $p = (int) round($probabilityUp * 100);
             if ($probabilityUp < 0.4 && in_array($action, ['add', 'hold'], true)) {
                 $action = $action === 'add' ? 'hold' : 'trim';
-                $reasons[] = "احتمال تاریخی رشد ۳ ماهه فقط $p٪ است";
+                $reasons[] = "احتمال تاریخی رشد ۳ ماهه فقط {$p}٪ است";
             } elseif ($probabilityUp >= 0.65 && $action === 'trim') {
                 $action = 'hold';
-                $reasons[] = "احتمال تاریخی رشد ۳ ماهه $p٪ است؛ فروش عجولانه توصیه نمی‌شود";
+                $reasons[] = "احتمال تاریخی رشد ۳ ماهه {$p}٪ است؛ فروش عجولانه توصیه نمی‌شود";
             }
         }
         if ($action === 'add' && $rewardRisk !== null && $rewardRisk < 1) {
@@ -81,6 +88,22 @@ final class Advisor
             if (in_array($action, ['add', 'hold'], true)) {
                 $action = 'trim';
             }
+        }
+        if ($class?->kind === AssetClass::FUND_GOLD || $class?->kind === AssetClass::FUND_COMMODITY) {
+            $reasons[] = $class->label() . ': نقش پوشش تورم و ارز دارد؛ همبستگی پایین آن با سهام، نوسان کل سبد را کم می‌کند';
+        } elseif ($class?->kind === AssetClass::FUND_LEVERAGED) {
+            $cap = $this->maxPositionWeight / 2;
+            $reasons[] = sprintf('صندوق اهرمی: نوسانی حدود ۱٫۵ تا ۲ برابر بازار دارد؛ سقف وزن آن نصف سقف عادی (%s٪) است', $cap);
+            if ($target > $cap) {
+                $target = $cap;
+                if ($weight > $cap && in_array($action, ['add', 'hold'], true)) {
+                    $action = 'trim';
+                }
+            }
+        } elseif ($class?->isOption()) {
+            $reasons[] = 'اختیار معامله: سررسید دارد و ممکن است بی‌ارزش منقضی شود؛ تاریخ سررسید را پیگیری کنید';
+        } elseif ($class?->kind === AssetClass::RIGHTS) {
+            $reasons[] = 'حق تقدم: برای تبدیل به سهم باید مبلغ اسمی را تا مهلت پذیره‌نویسی پرداخت کنید';
         }
         if ($daysToExit !== null && $daysToExit > self::MAX_DAYS_TO_EXIT) {
             $reasons[] = sprintf('خروج کامل حدود %d جلسه طول می‌کشد (ریسک نقدشوندگی)', round($daysToExit));

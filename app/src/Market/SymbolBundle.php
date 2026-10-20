@@ -54,6 +54,27 @@ final class SymbolBundle
         return trim((string) Field::get(Field::get($this->info, 'sector', []), 'lSecVal', ''));
     }
 
+    public function subSector(): string
+    {
+        return trim((string) Field::get(Field::get($this->info, 'subSector', []), 'lSoSecVal', ''));
+    }
+
+    /** Trading board, e.g. «بازار اول (تابلوی اصلی) بورس», when the endpoint provides it. */
+    public function board(): string
+    {
+        return trim((string) Field::get($this->info, ['cgrValCotTitle'], ''));
+    }
+
+    /** Classification with the freshest data: the instrument registry plus this request's info. */
+    public function assetClass(): AssetClass
+    {
+        $i = $this->instrument;
+        $name = $i->name ?: trim((string) Field::get($this->info, 'lVal30', ''));
+        $isin = $i->isin ?: (string) Field::get($this->info, 'cIsin', '');
+        return AssetClass::classify($isin, $name, $i->symbol, $this->sector() ?: $i->sector, $this->subSector() ?: $i->subSector,
+            $this->board() ?: ($i->board ?: $i->market));
+    }
+
     /** 'buy' / 'sell' queue from the first order-book level, or ''. */
     public function queue(): string
     {

@@ -7,6 +7,7 @@ namespace Sabadgardan\Portfolio;
 use Sabadgardan\Analysis\Potential\PotentialAnalyzer;
 use Sabadgardan\Analysis\StockReport;
 use Sabadgardan\Core\Settings;
+use Sabadgardan\Market\AssetClass;
 use Sabadgardan\Market\Instrument;
 use Sabadgardan\Market\Jalali;
 use Sabadgardan\Market\MarketData;
@@ -40,16 +41,17 @@ final class PortfolioService
         foreach ($open as $p) {
             $b = $bundles[$p['ins_code']] ?? null;
             $inst = $this->market->instrument($p['ins_code']);
-            $type = $inst ? $inst->type() : 'نامشخص';
+            $class = $inst ? $inst->assetClass() : new AssetClass(AssetClass::UNKNOWN);
             $close = $b?->closePrice();
             $last = $b?->lastPrice();
             $ref = $b?->referencePrice();
             $qty = $p['quantity'];
             $value = $close !== null ? $close * $qty : null;
-            $sellFee = $close !== null ? $fees->fee('sell', $type, $qty, $close) : null;
+            $sellFee = $close !== null ? $fees->fee('sell', $class->feeClass(), $qty, $close) : null;
             $net = $value !== null ? $value - $sellFee : null;
             $rows[] = [
-                'ins_code' => $p['ins_code'], 'symbol' => $p['symbol'], 'name' => $inst?->name ?? '', 'type' => $type,
+                'ins_code' => $p['ins_code'], 'symbol' => $p['symbol'], 'name' => $inst?->name ?? '', 'type' => $class->group(),
+                'class' => $class->label(), 'class_kind' => $class->kind, 'class_tone' => $class->tone(),
                 'quantity' => $qty, 'avg_cost' => $p['avg_cost'], 'cost' => $p['cost'],
                 'last' => $last, 'close' => $close, 'reference' => $ref,
                 'change_pct' => $close && $ref ? ($close / $ref - 1) * 100 : null,
@@ -221,6 +223,10 @@ final class PortfolioService
             $b = $bundles[$p['ins_code']] ?? null;
             $row = $p + ['potential' => null, 'report' => null, 'advice' => null, 'queue' => '', 'days_to_exit' => null,
                          'sector' => '', 'risk_share' => null, 'volatility_pct' => null, 'return_1y_pct' => null];
+            if ($b) {
+                $class = $b->assetClass();  // fresher than the registry: includes today's sub-sector
+                $row = ['class' => $class->label(), 'class_kind' => $class->kind, 'class_tone' => $class->tone()] + $row;
+            }
             if ($b && $b->history->count() > 1) {
                 $report = StockReport::build($b, $analyzer, $benchmark);
                 $row['report'] = $report;
@@ -246,9 +252,9 @@ final class PortfolioService
             $sma200 = $row['report']?->technical['sma200'] ?? null;
             $row['advice'] = $advisor->advise($row['weight'], $pot?->score, $pot?->probabilityUp,
                 $sma200 ? $row['close'] > $sma200 : null, $row['risk_share'], $row['days_to_exit'], $row['status'],
-                $pot?->levels['reward_risk'] ?? null);
+                $pot?->levels['reward_risk'] ?? null, new AssetClass($row['class_kind']));
             $sectors[$row['sector'] ?: 'نامشخص'] = ($sectors[$row['sector'] ?: 'نامشخص'] ?? 0) + $row['weight'];
-            $types[$row['type']] = ($types[$row['type']] ?? 0) + $row['weight'];
+            $types[$row['class']] = ($types[$row['class']] ?? 0) + $row['weight'];
         }
         unset($row);
         arsort($sectors);
@@ -353,7 +359,7 @@ final class PortfolioService
         }
         $fee = $num('fee');
         if ($fee === null) {
-            $fee = $this->settings->fees($userId)->fee($type, $inst->type(), $qty, $price);
+            $fee = $this->settings->fees($userId)->fee($type, $inst->assetClass()->feeClass(), $qty, $price);
         }
         return new Transaction($id, $type, $date, $inst->insCode, $inst->symbol, $qty, $price, max(0.0, $fee), 0, $note);
     }
@@ -388,7 +394,7 @@ final class PortfolioService
                 if ($qty <= 0 || $price <= 0) {
                     throw new \DomainException('تعداد یا قیمت نامعتبر');
                 }
-                $fee = $this->settings->fees($userId)->fee('buy', $inst->type(), $qty, $price);
+                $fee = $this->settings->fees($userId)->fee('buy', $inst->assetClass()->feeClass(), $qty, $price);
                 $this->repo->saveTransaction($userId, $portfolioId,
                     new Transaction(null, Transaction::BUY, $date, $inst->insCode, $inst->symbol, $qty, $price, $fee, 0,
                         'ورود گروهی'));

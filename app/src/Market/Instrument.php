@@ -11,8 +11,19 @@ final class Instrument
         public readonly string $symbol,
         public readonly string $name = '',
         public readonly string $isin = '',
-        public readonly string $market = '',
+        public readonly string $market = '',      // بورس / فرابورس (flowTitle)
+        public readonly string $sector = '',
+        public readonly string $subSector = '',
+        public readonly string $board = '',       // trading board (cgrValCotTitle), when known
     ) {
+    }
+
+    /** @param array<string, mixed> $row a row of the instruments table */
+    public static function fromRow(array $row): self
+    {
+        return new self((string) $row['ins_code'], (string) $row['symbol'], (string) $row['name'], (string) $row['isin'],
+            (string) $row['market'], (string) ($row['sector'] ?? ''), (string) ($row['sub_sector'] ?? ''),
+            (string) ($row['board'] ?? ''));
     }
 
     /** @param array<string, mixed> $r a GetInstrumentSearch record */
@@ -27,28 +38,24 @@ final class Instrument
         );
     }
 
-    /** Broad asset class from the ISIN prefix (ENDPOINTS.md, «تشخیص نوع ابزار مالی»). */
-    public static function typeOf(string $isin): string
+    public function assetClass(): AssetClass
     {
-        $isin = strtoupper($isin);
-        return match (true) {
-            str_starts_with($isin, 'IRT') => 'صندوق',
-            str_starts_with($isin, 'IRB') => 'اوراق',
-            str_starts_with($isin, 'IRO9'), str_starts_with($isin, 'IRS'), str_starts_with($isin, 'IROF') => 'اختیار معامله',
-            str_starts_with($isin, 'IRO') => 'سهام',
-            default => 'نامشخص',
-        };
+        return AssetClass::classify($this->isin, $this->name, $this->symbol, $this->sector, $this->subSector,
+            $this->board ?: $this->market);
     }
 
+    /** Broad family (سهام، صندوق، اوراق، …); see assetClass() for the precise kind. */
     public function type(): string
     {
-        return self::typeOf($this->isin);
+        return $this->assetClass()->group();
     }
 
     /** @return array<string, string> */
     public function toArray(): array
     {
+        $class = $this->assetClass();
         return ['ins_code' => $this->insCode, 'symbol' => $this->symbol, 'name' => $this->name,
-                'isin' => $this->isin, 'market' => $this->market, 'type' => $this->type()];
+                'isin' => $this->isin, 'market' => $this->market, 'type' => $class->group(), 'class' => $class->label(),
+                'class_kind' => $class->kind, 'class_tone' => $class->tone(), 'fee_class' => $class->feeClass()];
     }
 }

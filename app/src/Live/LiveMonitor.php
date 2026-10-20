@@ -31,6 +31,11 @@ use Sabadgardan\Signals\SignalEngine;
 final class LiveMonitor
 {
     public const COOLDOWN = 900;           // same symbol/rule/direction not repeated sooner, unless more severe
+    public const FLOW_COOLDOWN = 3600;
+    public const SIGNAL_OPEN_DAYS = 60;    // ~ the signal horizon (42 sessions) in calendar days     // money-flow readings change slowly; at most hourly
+    /** States (a level crossed, a queue formed): reported once a day, again only when they escalate. */
+    public const ONCE_A_DAY = ['breakout', 'stop', 'target', 'queue', 'pre_open'];
+    public const FLOW = ['smart_money', 'volume_pace'];
     public const HISTORY_LIMIT = 120;      // snapshots per symbol used by the rules
     public const CONTEXTS_PER_TICK = 10;   // bound the heavy first-of-day work per request
     public const SIGNAL_WINDOW = 900;      // insights considered as signal triggers
@@ -94,7 +99,7 @@ final class LiveMonitor
         $phase = $this->phase($now);
         $day = MarketClock::day($now);
         $monitored = $this->repo->monitoredSymbols();
-        $contexts = $this->contexts(array_keys($monitored), $day);
+        $contexts = $this->contexts(array_map('strval', array_keys($monitored)), $day);
         $pending = count($monitored) - count($contexts);
 
         $snapshots = $this->snapshots($contexts, $now, $day);
@@ -103,6 +108,10 @@ final class LiveMonitor
         $insights = $signals = 0;
         if (MarketClock::isLive($phase)) {
             foreach ($snapshots as $code => $snap) {
+                $code = (string) $code;
+                if ($contexts[$code]->isQuiet()) {
+                    continue;  // money-market-like instruments: their ticks are noise, not events
+                }
                 $history = $this->todaysSnapshots($code, $day);
                 $fresh = [];
                 foreach ($this->rules as $rule) {
@@ -159,7 +168,7 @@ final class LiveMonitor
             $sma200 = Stats::last(Indicators::sma($h->close, 200));
             $n = $h->count();
             $ctx = new SymbolContext(
-                insCode: $code,
+                insCode: (string) $code,
                 symbol: $b->instrument->symbol,
                 avgVolume: Stats::mean(array_slice($b->raw->volume, -20)),
                 avgValue: Stats::mean(array_slice($b->raw->value, -20)),
@@ -172,6 +181,8 @@ final class LiveMonitor
                 aboveSma200: $sma200 !== null ? $h->close[$n - 1] > $sma200 : null,
                 rewardRisk: $pot->levels['reward_risk'],
                 atr: $pot->levels['atr'],
+                assetClass: $b->assetClass()->kind,
+                cashLike: $b->assetClass()->isCashLike(),
             );
             $this->cache->set("ctx:$day:$code", $ctx->toArray(), 86400);
             $out[$code] = $ctx;
@@ -198,6 +209,7 @@ final class LiveMonitor
         $gDay = substr($day, 0, 8);
         $out = [];
         foreach ($contexts as $code => $ctx) {
+            $code = (string) $code;
             $price = (array) Field::get($data["price|$code"] ?? [], 'closingPriceInfo', []);
             if (!$price) {
                 continue;
@@ -232,7 +244,14 @@ final class LiveMonitor
     {
         $last = $this->db->one('SELECT created_at, severity FROM live_insights WHERE day = ? AND ins_code = ? AND rule = ? AND direction = ?
                                 ORDER BY id DESC LIMIT 1', [$day, $ins->insCode, $ins->rule, $ins->direction]);
-        return !$last || $now - (int) $last['created_at'] >= self::COOLDOWN || $ins->severity > (int) $last['severity'];
+        if (!$last || $ins->severity > (int) $last['severity']) {
+            return true;
+        }
+        if (in_array($ins->rule, self::ONCE_A_DAY, true)) {
+            return false;
+        }
+        $cooldown = in_array($ins->rule, self::FLOW, true) ? self::FLOW_COOLDOWN : self::COOLDOWN;
+        return $now - (int) $last['created_at'] >= $cooldown;
     }
 
     private function record(Insight $ins, string $day): void
@@ -257,9 +276,8 @@ final class LiveMonitor
         }
         $engine = new SignalEngine((float) $this->settings->system('inflation_annual'));
         $signal = $engine->evaluate($ctx, $snap, $recent, $bundle->history, (bool) $who['holders']);
-        if (!$signal || $this->db->value('SELECT 1 FROM signals WHERE day = ? AND ins_code = ? AND side = ?',
-                [$day, $ctx->insCode, $signal->side])) {
-            return 0;  // one signal per symbol and side per day
+        if (!$signal || $this->hasOpenSignal($signal, $now)) {
+            return 0;
         }
         $signal->id = $this->db->insert('signals', [
             'day' => $day, 'created_at' => $now, 'ins_code' => $signal->insCode, 'symbol' => $signal->symbol,
@@ -272,6 +290,24 @@ final class LiveMonitor
             $this->db->update('signals', ['notified' => $sent], ['id' => $signal->id]);
         }
         return 1;
+    }
+
+    /**
+     * A buy signal stays open until its stop or target is reached (at most SIGNAL_OPEN_DAYS); a sell
+     * warning for a week. Re-issuing it every day while it is still running would only be noise.
+     */
+    private function hasOpenSignal(Signal $signal, int $now): bool
+    {
+        $prev = $this->db->one('SELECT * FROM signals WHERE ins_code = ? AND side = ? AND created_at >= ? ORDER BY id DESC LIMIT 1',
+            [$signal->insCode, $signal->side, $now - self::SIGNAL_OPEN_DAYS * 86400]);
+        if (!$prev) {
+            return false;
+        }
+        if ($signal->side === Signal::SELL) {
+            return (int) $prev['created_at'] >= $now - 7 * 86400;
+        }
+        $price = $signal->entry;
+        return ($prev['stop'] === null || $price > (float) $prev['stop']) && ($prev['target'] === null || $price < (float) $prev['target']);
     }
 
     private function marketInsight(int $now, string $day): int
@@ -324,15 +360,17 @@ final class LiveMonitor
             $r = $this->db->one('SELECT payload FROM live_snapshots WHERE day = ? AND ins_code = ? ORDER BY taken_at DESC LIMIT 1',
                 [$day, $code]);
             $s = $r ? Snapshot::fromArray(json_decode((string) $r['payload'], true)) : null;
+            $class = $this->market->instrument((string) $code)?->assetClass();
             $rows[] = [
-                'ins_code' => $code, 'symbol' => $m['symbol'], 'held' => $m['held'],
+                'ins_code' => (string) $code, 'symbol' => $m['symbol'], 'held' => $m['held'],
+                'class' => $class?->label(), 'class_tone' => $class?->tone(),
                 'price' => $s?->price(), 'change' => $s?->changePct(), 'close_change' => $s?->closeChangePct(),
                 'queue' => $s?->queue(), 'queue_value' => $s && $s->queue() ? $s->queueValue() : null,
                 'imbalance' => $s && $s->askTotal() > 0 && !$s->queue() ? $s->bidTotal() / $s->askTotal() : null,
                 'buyer_power' => $s?->buyerPower(), 'updated' => $s ? MarketClock::local($s->at, 'H:i:s') : null,
             ];
         }
-        $codes = array_keys($mine);
+        $codes = array_map('strval', array_keys($mine));
         $insights = [];
         $signals = [];
         if ($codes) {

@@ -33,6 +33,7 @@
   function toman(v) {  // v already in toman
     if (v == null || isNaN(v)) return "-";
     var a = Math.abs(v);
+    if (a >= 1e12) return LRM + nf1.format(v / 1e12) + " هزار میلیارد تومان";
     if (a >= 1e9) return LRM + nf2.format(v / 1e9) + " میلیارد تومان";
     if (a >= 1e6) return LRM + nf1.format(v / 1e6) + " میلیون تومان";
     return LRM + nf0.format(v) + " تومان";
@@ -48,11 +49,11 @@
     pct1: function (p) { return LRM + nf1.format(val(p)) + "٪"; },
     toman: function (v) { return toman(v); },
     tomanAxis: function (v) { return compact(v); },
-    tomanLabel: function (p) { return compact(val(p) / 10); },
+    tomanLabel: function (p) { return compact(val(p)); },  // values already in toman
     points: function (ps) { var p = ps[0]; return p.name + "<br>" + signed(p.value) + " امتیاز"; },
     endlabel: function (p) { return p.seriesName + " " + compact(p.value); },
     corr: function (p) { var o = p.data || p.value; return o[2] == null ? "-" : "همبستگی: " + nf2.format(o[2]); },
-    corrlabel: function (p) { var o = p.data || p.value; return o[2] == null ? "" : nf1.format(o[2]); },
+    corrlabel: function (p) { var o = p.data || p.value; return o[2] == null ? "" : nf1.format(Math.abs(o[2]) < 0.05 ? 0 : o[2]); },
     riskreturn: function (p) {
       return "<b>" + esc(p.name) + "</b><br>نوسان سالانه " + nf1.format(p.value[0]) + "٪<br>بازده ۱ سال " + signed(p.value[1]) +
         "٪<br>وزن در سبد " + nf1.format(p.value[2]) + "٪";
@@ -75,10 +76,22 @@
       var src = document.getElementById(el.getAttribute("data-chart"));
       if (!src) return;
       var chart = echarts.init(el, null, { renderer: "canvas" });
-      chart.setOption(hydrate(JSON.parse(src.textContent)));
+      chart.setOption(narrow(hydrate(JSON.parse(src.textContent)), el.clientWidth));
       el._chart = chart;
       charts.push(chart);
     });
+  }
+  /* Phones: label gutters sized for desktop (category labels beside bars) would leave no room for the bars. */
+  function narrow(opt, width) {
+    if (width >= 520) return opt;
+    [].concat(opt.grid || []).forEach(function (g) {
+      if (g.right > 110) g.right = 104;
+      if (g.left > 110) g.left = 104;
+    });
+    [].concat(opt.yAxis || []).forEach(function (a) {
+      if (a.axisLabel && a.axisLabel.width > 100) a.axisLabel.width = 96;
+    });
+    return opt;
   }
   var resizeT;
   window.addEventListener("resize", function () { clearTimeout(resizeT); resizeT = setTimeout(function () { charts.forEach(function (c) { c.resize(); }); }, 120); });
@@ -306,7 +319,8 @@
         list.classList.remove("open");
         if (chosen) {
           chosen.hidden = false; input.parentNode.hidden = true;
-          $("b", chosen).textContent = it.symbol; $("span", chosen).textContent = it.name + (it.market ? " · " + it.market : "");
+          $("b", chosen).textContent = it.symbol;
+          $("span", chosen).textContent = it.name + (it["class"] ? " · " + it["class"] : "") + (it.market ? " · " + it.market : "");
         }
         box.dispatchEvent(new CustomEvent("symbol:chosen", { detail: it, bubbles: true }));
         if (box.hasAttribute("data-navigate")) location.href = BASE + "/stock?ins=" + encodeURIComponent(it.ins_code);
@@ -316,7 +330,7 @@
         if (!items.length) { list.innerHTML = "<div class='ac-empty'>نمادی پیدا نشد.</div>"; return; }
         list.innerHTML = items.map(function (it, k) {
           return "<div class='ac-item" + (k === active ? " active" : "") + "' data-k='" + k + "'><b>" + esc(it.symbol) + "</b><span>" + esc(it.name) +
-            (it.type && it.type !== "سهام" ? " · " + esc(it.type) : "") + "</span></div>";
+            "</span>" + (it["class"] ? "<em class='tag " + esc(it.class_tone || "") + "'>" + esc(it["class"]) + "</em>" : "") + "</div>";
         }).join("");
       }
       input.addEventListener("input", function () {
@@ -355,7 +369,7 @@
     drawer = $("#tx-drawer"); overlay = $(".overlay");
     if (!drawer) return;
     var form = $("form", drawer), err = $(".form-error", drawer), fees = JSON.parse(drawer.getAttribute("data-fees") || "{}");
-    var assetType = "سهام";
+    var feeClass = "stock";  // stock | fund | bond | option (AssetClass::feeClass)
     overlay.addEventListener("click", function () { closeDrawer(); $(".sidebar") && $(".sidebar").classList.remove("open"); });
     $$("[data-close-drawer]", drawer).forEach(function (b) { b.addEventListener("click", closeDrawer); });
     function type() { return (form.querySelector("input[name=type]:checked") || {}).value; }
@@ -368,7 +382,7 @@
       var t = type(), qty = parseNum(form.quantity.value), price = parseNum(form.price.value), out = $(".calc", form);
       if (!out) return;
       if ((t !== "buy" && t !== "sell") || !qty || !price) { out.hidden = true; return; }
-      var gross = qty * price, cls = assetType === "صندوق" ? "fund" : "stock", rate = fees["fee_" + cls + "_" + t] || 0;
+      var gross = qty * price, cls = feeClass, rate = fees["fee_" + cls + "_" + t] || 0;
       var feeAuto = Math.round(gross * rate), feeInput = parseNum(form.fee.value), fee = feeInput == null ? feeAuto : feeInput;
       form.fee.placeholder = "خودکار: " + nf0.format(feeAuto);
       out.hidden = false;
@@ -383,10 +397,10 @@
       el.addEventListener("blur", function () { var v = parseNum(el.value); if (v != null && el.name !== "fee") el.value = nf0.format(v); });
     });
     drawer.addEventListener("symbol:chosen", function (e) {
-      assetType = e.detail.type || "سهام";
+      feeClass = e.detail.fee_class || "stock";
       var hint = $(".price-hint", form);
       api("/api/price", { ins: e.detail.ins_code }).then(function (p) {
-        if (p.type) assetType = p.type;
+        if (p.fee_class) feeClass = p.fee_class;
         if (hint && p.close) {
           hint.innerHTML = "قیمت پایانی: <a href='#' data-p='" + p.close + "'>" + nf0.format(p.close) + "</a>" +
             (p.last ? " · آخرین: <a href='#' data-p='" + p.last + "'>" + nf0.format(p.last) + "</a>" : "");
@@ -416,6 +430,8 @@
         e.preventDefault();
         form.reset(); err.hidden = true;
         var data = b.getAttribute("data-tx") ? JSON.parse(b.getAttribute("data-tx")) : {};
+        var pick = $("#tx-portfolio", form);
+        if (pick) { form.action = pick.value; pick.closest(".field").hidden = !!data.id; }
         form.id.value = data.id || "";
         $("h2", drawer).textContent = data.id ? "ویرایش تراکنش" : "ثبت تراکنش";
         var t = data.type || b.getAttribute("data-type") || "buy";
@@ -449,7 +465,7 @@
           var root = document.querySelector(".content");
           sortable(root); initCharts(root);
         })
-        .catch(function () { box.innerHTML = "<div class='card s12'><div class='notice error'>بارگذاری تحلیل سبد ناموفق بود. صفحه را دوباره باز کنید.</div></div>"; });
+        .catch(function () { box.innerHTML = "<div class='card s12'><div class='notice error'>بارگذاری این بخش ناموفق بود؛ صفحه را دوباره باز کنید.</div></div>"; });
     });
   }
 
@@ -479,6 +495,7 @@
     function render(s) {
       last = s;
       set("live-phase", esc(s.phase_label));
+      var status = $(".live-status"); if (status) status.classList.toggle("closed", s.phase === "closed");
       set("live-clock", "ساعت تهران " + esc(s.clock) + (s.updated ? " · آخرین بررسی " + esc(s.updated) : ""));
       var all = s.insights || [], items = all.filter(FILTERS[filter]);
       set("live-high", String(all.filter(function (i) { return i.severity >= 3; }).length));
@@ -499,7 +516,8 @@
       set("live-table", (s.symbols || []).length ? "<table><thead><tr><th>نماد</th><th>آخرین</th><th>تغییر</th><th>پایانی</th><th>قدرت خریدار</th><th>خرید/فروش تابلو</th><th>صف</th></tr></thead><tbody>" +
         s.symbols.map(function (r) {
           var q = r.queue === "buy" ? "<span class='pill buy'>صف خرید</span>" : r.queue === "sell" ? "<span class='pill sell'>صف فروش</span>" : "";
-          return "<tr><td><a href='" + BASE + "/stock?ins=" + encodeURIComponent(r.ins_code) + "'>" + esc(r.symbol) + "</a>" + (r.held ? " <span class='pill accent'>سبد</span>" : "") +
+          return "<tr><td><a href='" + BASE + "/stock?ins=" + encodeURIComponent(r.ins_code) + "'>" + esc(r.symbol) + "</a>" +
+            (r["class"] ? " <span class='tag " + esc(r.class_tone || "") + "'>" + esc(r["class"]) + "</span>" : "") + (r.held ? " <span class='pill accent'>سبد</span>" : "") +
             "</td><td>" + num(r.price) + "</td><td>" + pct(r.change) + "</td><td>" + pct(r.close_change) + "</td><td>" + num(r.buyer_power, nf2) + "</td><td>" + num(r.imbalance, nf2) +
             "</td><td>" + q + "</td></tr>";
         }).join("") + "</tbody></table>" : "<div class='empty'>نمادی برای رصد ندارید. سبد خود را تکمیل کنید یا نماد به دیده‌بان اضافه کنید.</div>");

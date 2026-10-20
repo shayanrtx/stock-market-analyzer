@@ -46,7 +46,7 @@ final class Signal
     /** Plain-text message for messengers (Bale/Telegram). */
     public function message(string $siteName): string
     {
-        $pct = static fn (?float $level) => $level ? sprintf(' (%s%%)', number_format(($level / $this->entry - 1) * 100, 1)) : '';
+        $pct = fn (?float $level) => $level ? sprintf(' (%s%%)', number_format(($level / $this->entry - 1) * 100, 1)) : '';
         $lines = [
             ($this->side === self::BUY ? '🟢 ' : '🔴 ') . $this->label() . ' — ' . $this->symbol,
             '',

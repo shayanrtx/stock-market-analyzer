@@ -57,6 +57,9 @@ $initial = mb_substr((string) ($user['display_name'] ?? $user['username'] ?? '?'
       <?= $topActions ?? '' ?>
     </div></div>
     <main class="content">
+      <?php if (!empty($demo)): ?>
+        <div class="demo-banner">حالت نمایشی: داده‌های بازار ساختگی‌اند و فقط برای آشنایی با برنامه تولید شده‌اند. برای داده‌ی واقعی، در config/config.php مقدار <code dir="ltr">market.transport</code> را <code dir="ltr">curl</code> بگذارید و برنامه را روی هاست داخل ایران اجرا کنید.</div>
+      <?php endif; ?>
       <?= $content ?>
       <div class="foot">داده‌ها از tsetmc.com و tse.ir · تحلیل‌ها خودکار و بر پایه‌ی داده‌های گذشته‌اند و توصیه‌ی قطعی خرید یا فروش نیستند.</div>
     </main>

@@ -37,6 +37,8 @@ final class App
     /** @var array<string, object> */
     private array $services = [];
     private ?Transport $transport = null;
+    /** @var null|\Closure(): int */
+    private ?\Closure $clock = null;
 
     public function __construct(public readonly string $root, public readonly Config $config)
     {
@@ -51,6 +53,13 @@ final class App
     public function withTransport(Transport $transport): self
     {
         $this->transport = $transport;
+        return $this;
+    }
+
+    /** Simulated time for the live monitor (tests, bin/demo.php). */
+    public function withClock(callable $clock): self
+    {
+        $this->clock = \Closure::fromCallable($clock);
         return $this;
     }
 
@@ -76,6 +85,12 @@ final class App
         $this->services['db'] = $db;
     }
 
+    /** Tests and simulations keep their cache out of storage/. */
+    public function setCache(Cache $cache): void
+    {
+        $this->services['cache'] = $cache;
+    }
+
     public function settings(): Settings
     {
         return $this->make('settings', fn () => new Settings($this->db()));
@@ -98,15 +113,24 @@ final class App
 
     public function market(): MarketData
     {
-        return $this->make('market', function () {
-            $transport = $this->transport ?? ($this->config->get('market.transport') === 'demo'
-                ? new \Sabadgardan\Market\Http\DemoTransport() : new CurlTransport());
-            $timeout = (int) $this->config->get('market.timeout');
-            $retries = (int) $this->config->get('market.max_retries');
-            $cdn = new TsetmcClient($transport, $this->cache(), $timeout, $retries);
-            $gw = new GatewayClient($transport, $this->cache(), $timeout, 1);
-            return new MarketData($cdn, $gw, $this->db());
-        });
+        return $this->make('market', fn () => $this->buildMarket($this->cache()));
+    }
+
+    /** Market client that bypasses the cache: health checks must measure the live services. */
+    public function uncachedMarket(): MarketData
+    {
+        return $this->buildMarket(Cache::disabled());
+    }
+
+    private function buildMarket(Cache $cache): MarketData
+    {
+        $transport = $this->transport ?? $this->make('transport', fn () => $this->config->get('market.transport') === 'demo'
+            ? new \Sabadgardan\Market\Http\DemoTransport() : new CurlTransport());
+        $timeout = (int) $this->config->get('market.timeout');
+        $retries = (int) $this->config->get('market.max_retries');
+        $cdn = new TsetmcClient($transport, $cache, $timeout, $retries);
+        $gw = new GatewayClient($transport, $cache, $timeout, 1);
+        return new MarketData($cdn, $gw, $this->db());
     }
 
     public function portfolios(): PortfolioRepository
@@ -131,7 +155,8 @@ final class App
     public function live(): LiveMonitor
     {
         return $this->make('live', fn () => new LiveMonitor($this->db(), $this->market(), $this->portfolios(), $this->settings(),
-            $this->cache(), $this->notifier(), $this->root . '/storage/live.lock', (int) $this->config->get('live.interval')));
+            $this->cache(), $this->notifier(), $this->root . '/storage/live.lock', (int) $this->config->get('live.interval'),
+            $this->clock));
     }
 
     public function view(Request $request): View
@@ -162,6 +187,7 @@ final class App
         $r->post('/portfolio/{id}/transactions', fn ($q) => $c(C\PortfolioController::class)->saveTransaction($q));
         $r->post('/portfolio/{id}/transactions/{tx}/delete', fn ($q) => $c(C\PortfolioController::class)->deleteTransaction($q));
         $r->post('/portfolio/{id}/import', fn ($q) => $c(C\PortfolioController::class)->import($q));
+        $r->get('/portfolio/{id}/export', fn ($q) => $c(C\PortfolioController::class)->export($q));
         $r->get('/portfolios', fn ($q) => $c(C\PortfolioController::class)->manage($q));
         $r->post('/portfolios', fn ($q) => $c(C\PortfolioController::class)->create($q));
         $r->post('/portfolios/{id}/rename', fn ($q) => $c(C\PortfolioController::class)->rename($q));
@@ -171,6 +197,7 @@ final class App
         $r->get('/stock', fn ($q) => $c(C\StockController::class)->show($q));
         $r->get('/market', fn ($q) => $c(C\MarketController::class)->show($q));
         $r->get('/watchlist', fn ($q) => $c(C\WatchlistController::class)->index($q));
+        $r->get('/watchlist/analysis', fn ($q) => $c(C\WatchlistController::class)->analysis($q));
         $r->post('/watchlist', fn ($q) => $c(C\WatchlistController::class)->add($q));
         $r->post('/watchlist/{code}/delete', fn ($q) => $c(C\WatchlistController::class)->remove($q));
         $r->get('/live', fn ($q) => $c(C\LiveController::class)->show($q));
@@ -183,6 +210,7 @@ final class App
         $r->post('/settings/analysis', fn ($q) => $c(C\SettingsController::class)->analysis($q));
         $r->post('/settings/notifications', fn ($q) => $c(C\SettingsController::class)->notifications($q));
         $r->post('/settings/notifications/test', fn ($q) => $c(C\SettingsController::class)->testNotification($q));
+        $r->post('/settings/notifications/check', fn ($q) => $c(C\SettingsController::class)->checkLink($q));
         $r->post('/settings/notifications/{channel}/unlink', fn ($q) => $c(C\SettingsController::class)->unlink($q));
 
         // API
@@ -199,7 +227,7 @@ final class App
         $r->post('/admin/users/{id}/delete', fn ($q) => $c(C\AdminController::class)->deleteUser($q));
         $r->get('/admin/settings', fn ($q) => $c(C\AdminController::class)->settings($q));
         $r->post('/admin/settings', fn ($q) => $c(C\AdminController::class)->saveSettings($q));
-        $r->get('/admin/audit', fn ($q) => $c(C\AdminController::class)->audit($q));
+        $r->get('/admin/audit', fn ($q) => $c(C\AdminController::class)->auditLog($q));
         $r->get('/admin/health', fn ($q) => $c(C\AdminController::class)->health($q));
         return $r;
     }

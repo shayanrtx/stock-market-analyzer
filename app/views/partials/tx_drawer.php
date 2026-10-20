@@ -10,6 +10,14 @@ use Sabadgardan\Portfolio\Transaction; ?>
       <?= $v->csrf() ?>
       <input type="hidden" name="id" value="">
       <div class="form-error" hidden role="alert"></div>
+      <?php if (count($portfolioList ?? []) > 1): ?>
+        <div class="field"><label for="tx-portfolio">سبد</label>
+          <select id="tx-portfolio" onchange="this.form.action=this.value">
+            <?php foreach ($portfolioList as $pf): ?>
+              <option value="<?= $v->url("portfolio/{$pf['id']}/transactions") ?>" <?= (int) $pf['id'] === (int) $portfolio['id'] ? 'selected' : '' ?>><?= $v->e($pf['name']) ?></option>
+            <?php endforeach; ?>
+          </select></div>
+      <?php endif; ?>
       <div class="field"><label>نوع تراکنش</label>
         <div class="segmented">
           <?php foreach (Transaction::LABELS as $type => $label): ?>

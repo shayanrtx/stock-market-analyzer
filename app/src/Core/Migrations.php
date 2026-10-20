@@ -159,6 +159,11 @@ final class Migrations
                 )$sfx");
                 $db->pdo->exec('CREATE INDEX idx_audit_time ON audit_log (created_at)');
             },
+            // 2: instrument classification inputs (TSE sub-sector and trading board).
+            2 => static function (Database $db): void {
+                $db->pdo->exec("ALTER TABLE instruments ADD COLUMN sub_sector VARCHAR(150) NOT NULL DEFAULT ''");
+                $db->pdo->exec("ALTER TABLE instruments ADD COLUMN board VARCHAR(100) NOT NULL DEFAULT ''");
+            },
         ];
     }
 

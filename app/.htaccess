@@ -1,0 +1,27 @@
+# Sabadgardan — Apache / LiteSpeed configuration
+Options -Indexes
+DirectoryIndex index.php
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Application code, data and configuration are never served directly.
+    RewriteRule ^(src|views|storage|config|resources|tests|bin)(/|$) - [F,L]
+    RewriteRule (^|/)\. - [F,L]
+
+    # Existing files (assets) are served as-is; everything else goes to the front controller.
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^ index.php [QSA,L]
+</IfModule>
+
+<IfModule mod_headers.c>
+    <FilesMatch "\.(css|js|woff2)$">
+        Header set Cache-Control "public, max-age=2592000"
+    </FilesMatch>
+</IfModule>
+
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/css application/javascript application/json image/svg+xml
+</IfModule>
+
+AddType font/woff2 .woff2

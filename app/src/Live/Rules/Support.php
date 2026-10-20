@@ -10,9 +10,11 @@ use Sabadgardan\Live\Snapshot;
 final class Support
 {
     /** Rial -> «x م.ت» (million toman). */
-    public static function mt(float $rial): string
+    /** Rial amount as readable toman text, e.g. «۷۲.۰ میلیارد تومان». */
+    public static function money(float $rial): string
     {
-        return number_format($rial / 10_000_000, 1) . ' م.ت';
+        [$n, $unit] = \Sabadgardan\Market\Text::moneyParts($rial);
+        return $n . ' ' . $unit;
     }
 
     /**

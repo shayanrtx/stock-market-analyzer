@@ -40,6 +40,7 @@ abstract class Controller
             'glossary' => Glossary::ENTRIES,
             'portfolioList' => $user ? $this->app->portfolios()->portfolios((int) $user['id']) : [],
             'path' => $q->path,
+            'demo' => $this->app->config->get('market.transport') === 'demo',
         ];
         return Response::html($view->render($template, $data, $layout), $status);
     }

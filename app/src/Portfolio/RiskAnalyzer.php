@@ -178,10 +178,12 @@ final class RiskAnalyzer
     /** @param list<float> $weightsPct @return array{hhi: float, effective_positions: float} */
     public static function concentration(array $weightsPct): array
     {
+        // Shares of the invested part (weights may be of NAV, which also holds cash).
+        $total = array_sum(array_filter($weightsPct, static fn ($w) => $w > 0));
         $hhi = 0.0;
         foreach ($weightsPct as $w) {
             if ($w > 0) {
-                $hhi += ($w / 100) ** 2;
+                $hhi += ($w / $total) ** 2;
             }
         }
         return ['hhi' => $hhi, 'effective_positions' => $hhi ? 1 / $hhi : 0.0];

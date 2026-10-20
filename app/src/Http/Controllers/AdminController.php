@@ -166,13 +166,14 @@ final class AdminController extends Controller
         foreach (array_keys(self::SYSTEM_FIELDS) as $k) {
             $values[$k] = $s->system($k);
         }
-        foreach (['registration_open', 'registration_approval', 'inflation_annual', 'risk_free_annual', 'fee_stock_buy',
-                  'fee_stock_sell', 'fee_fund_buy', 'fee_fund_sell', 'max_position_weight'] as $k) {
+        foreach (['registration_open', 'registration_approval', ...array_keys(SettingsController::ANALYSIS_FIELDS)] as $k) {
             $values[$k] = $s->system($k);
         }
         return $this->view($q, 'admin/settings', ['title' => 'تنظیمات سامانه', 'nav' => 'admin', 'values' => $values,
             'fields' => self::SYSTEM_FIELDS, 'analysisFields' => SettingsController::ANALYSIS_FIELDS,
-            'cronToken' => (string) $this->app->config->get('cron_token')]);
+            'cronUrl' => ($q->isSecure() ? 'https' : 'http') . '://' . ($q->server['HTTP_HOST'] ?? 'localhost')
+                . $this->app->view($q)->url('cron', ['token' => (string) $this->app->config->get('cron_token')]),
+            'appRoot' => $this->app->root]);
     }
 
     public function saveSettings(Request $q): Response
@@ -197,7 +198,7 @@ final class AdminController extends Controller
         return $this->redirect($q, '/admin/settings');
     }
 
-    public function audit(Request $q): Response
+    public function auditLog(Request $q): Response
     {
         if ($r = $this->guard($q)) {
             return $r;
@@ -219,7 +220,7 @@ final class AdminController extends Controller
             ['پوشه‌ی storage قابل نوشتن', is_writable($this->app->root . '/storage') ? 'بله' : 'خیر', is_writable($this->app->root . '/storage')],
             ['آخرین اجرای cron', $this->app->settings()->system('last_cron_at') ?: 'هرگز', $this->app->settings()->system('last_cron_at') !== ''],
         ];
-        $market = $this->app->market();
+        $market = $this->app->uncachedMarket();
         $probe = function (string $name, callable $fn, array $fields) use (&$checks): void {
             $start = microtime(true);
             try {

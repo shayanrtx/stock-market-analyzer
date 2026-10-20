@@ -9,3 +9,14 @@ dist/
 diagnostics/
 portfolio.csv
 watchlist.txt
+
+# PHP app: secrets and runtime data never go to git
+app/config/config.php
+app/storage/*
+!app/storage/.htaccess
+!app/storage/cache/
+app/storage/cache/*
+!app/storage/cache/.gitkeep
+!app/storage/logs/
+app/storage/logs/*
+!app/storage/logs/.gitkeep

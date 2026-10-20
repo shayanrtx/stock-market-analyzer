@@ -264,6 +264,20 @@ final class Charts
         ]);
     }
 
+    /** Plain count columns (e.g. sign-ups per day). @param array<string, int> $values label => count */
+    public static function counts(array $values, string $name): array
+    {
+        return self::base([
+            'tooltip' => ['trigger' => 'axis', 'axisPointer' => ['type' => 'shadow']],
+            'grid' => ['left' => 36, 'right' => 16, 'top' => 16, 'bottom' => 28],
+            'xAxis' => self::axis(array_map('strval', array_keys($values)), ['axisTick' => ['show' => false],
+                                  'axisLabel' => ['hideOverlap' => true]]),
+            'yAxis' => self::axis(null, ['type' => 'value', 'minInterval' => 1]),
+            'series' => [['type' => 'bar', 'name' => $name, 'barMaxWidth' => 18, 'data' => array_values($values),
+                          'itemStyle' => ['color' => self::ACCENT, 'borderRadius' => [3, 3, 0, 0]]]],
+        ]);
+    }
+
     /** @param list<float> $close @param list<string> $dates */
     public static function underwater(array $dates, array $close): array
     {
@@ -294,17 +308,17 @@ final class Charts
         $values = [];
         foreach ($flow as $row) {
             $price = $priceByDate[$row['date']] ?? $last;
-            $values[] = round($row['net_volume'] * $price / 10_000_000, 1);  // million toman
+            $values[] = round($row['net_volume'] * $price / 10);  // toman
         }
         return self::base([
             'legend' => ['top' => 0, 'textStyle' => ['fontSize' => 11]],
             'grid' => ['left' => 56, 'right' => 48, 'top' => 32, 'bottom' => 28],
             'xAxis' => self::axis(self::jdates(array_column($flow, 'date')), ['axisLabel' => ['hideOverlap' => true]]),
-            'yAxis' => [self::axis(null, ['type' => 'value', 'name' => 'م.ت', 'axisLabel' => ['formatter' => 'fn:compact']]),
+            'yAxis' => [self::axis(null, ['type' => 'value', 'name' => 'تومان', 'axisLabel' => ['formatter' => 'fn:tomanAxis']]),
                         self::axis(null, ['type' => 'value', 'name' => 'قدرت', 'splitLine' => ['show' => false]])],
             'series' => [
-                ['type' => 'bar', 'name' => 'ورود/خروج پول حقیقی (م.ت)', 'data' => array_map(static fn ($v) => ['value' => $v,
-                    'itemStyle' => ['color' => $v >= 0 ? self::UP : self::DOWN]], $values)],
+                ['type' => 'bar', 'name' => 'ورود/خروج پول حقیقی', 'color' => self::UP, 'tooltip' => ['valueFormatter' => 'fn:toman'],
+                 'data' => array_map(static fn ($v) => ['value' => $v, 'itemStyle' => ['color' => $v >= 0 ? self::UP : self::DOWN]], $values)],
                 ['type' => 'line', 'name' => 'قدرت خریدار', 'yAxisIndex' => 1, 'showSymbol' => false,
                  'data' => array_map(static fn ($r) => self::r($r['buyer_power']), $flow),
                  'lineStyle' => ['color' => '#7c3aed', 'width' => 1.4], 'itemStyle' => ['color' => '#7c3aed'],
@@ -368,8 +382,8 @@ final class Charts
         return self::base([
             'legend' => ['top' => 0, 'textStyle' => ['fontSize' => 11]],
             'axisPointer' => ['link' => [['xAxisIndex' => 'all']]],
-            'grid' => [['left' => 48, 'right' => 16, 'top' => 32, 'height' => '58%'],
-                       ['left' => 48, 'right' => 16, 'top' => '76%', 'height' => '16%']],
+            'grid' => [['left' => 48, 'right' => 30, 'top' => 32, 'height' => '58%'],
+                       ['left' => 48, 'right' => 30, 'top' => '76%', 'height' => '16%']],
             'xAxis' => [self::axis($dates, ['boundaryGap' => false, 'axisLabel' => ['show' => false]]),
                         self::axis($dates, ['gridIndex' => 1, 'boundaryGap' => false, 'axisLabel' => ['hideOverlap' => true]])],
             'yAxis' => [self::axis(null, ['type' => 'value', 'scale' => true]),
@@ -405,11 +419,11 @@ final class Charts
         $pairs = array_reverse($items, true);
         return self::base([
             'tooltip' => ['trigger' => 'axis', 'axisPointer' => ['type' => 'shadow'], 'valueFormatter' => $money ? 'fn:toman' : 'fn:pct'],
-            'grid' => ['left' => 48, 'right' => 160, 'top' => 8, 'bottom' => 20],
+            'grid' => ['left' => 48, 'right' => 196, 'top' => 8, 'bottom' => 20],
             'xAxis' => self::axis(null, ['type' => 'value', 'inverse' => !$signedColors,
                                          'axisLabel' => ['formatter' => $money ? 'fn:tomanAxis' : '{value}٪']]),
             'yAxis' => self::axis(array_map('strval', array_keys($pairs)), ['position' => 'right', 'axisTick' => ['show' => false],
-                                  'axisLabel' => ['color' => '#374151', 'width' => 150, 'overflow' => 'truncate']]),
+                                  'axisLabel' => ['color' => '#374151', 'width' => 186, 'overflow' => 'truncate']]),
             'series' => [['type' => 'bar', 'barWidth' => '55%',
                           'data' => array_map(static fn ($v) => ['value' => round($v, $money ? 0 : 1),
                               'itemStyle' => ['color' => $signedColors ? ($v >= 0 ? self::UP : self::DOWN) : $color,
@@ -554,10 +568,11 @@ final class Charts
         usort($items, static fn ($a, $b) => $a[1] <=> $b[1]);
         return self::base([
             'tooltip' => ['trigger' => 'axis', 'axisPointer' => ['type' => 'shadow']],
-            'grid' => ['left' => 8, 'right' => 80, 'top' => 8, 'bottom' => 20],
-            'xAxis' => self::axis(null, ['type' => 'value', 'axisLabel' => ['formatter' => 'fn:compact']]),
+            'grid' => ['left' => 28, 'right' => 80, 'top' => 8, 'bottom' => 24],
+            'xAxis' => self::axis(null, ['type' => 'value', 'splitNumber' => 4,
+                                         'axisLabel' => ['formatter' => 'fn:compact', 'hideOverlap' => true]]),
             'yAxis' => self::axis(array_column($items, 0), ['position' => 'right', 'axisTick' => ['show' => false]]),
-            'series' => [['type' => 'bar', 'barWidth' => '55%', 'name' => 'اثر',
+            'series' => [['type' => 'bar', 'barWidth' => '55%', 'name' => 'اثر بر شاخص (واحد)',
                           'data' => array_map(static fn ($i) => ['value' => round($i[1], 1),
                               'itemStyle' => ['color' => $i[1] >= 0 ? self::UP : self::DOWN, 'borderRadius' => 3]], $items)]],
         ]);

@@ -19,6 +19,8 @@ final class Icons
         'shield' => '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
         'logout' => '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/>',
         'plus' => '<path d="M12 5v14M5 12h14"/>',
+        'minus' => '<path d="M5 12h14"/>',
+        'download' => '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
         'help' => '<circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
         'close' => '<path d="M18 6 6 18M6 6l12 12"/>',
         'search' => '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',

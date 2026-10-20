@@ -13,6 +13,9 @@ require __DIR__ . '/TestCase.php';
 
 // Any warning or notice is a bug: fail the test instead of printing it.
 set_error_handler(static function (int $no, string $msg, string $file, int $line): bool {
+    if (!(error_reporting() & $no)) {
+        return false;  // silenced with @ on purpose (e.g. best-effort mkdir)
+    }
     throw new ErrorException($msg, 0, $no, $file, $line);
 });
 

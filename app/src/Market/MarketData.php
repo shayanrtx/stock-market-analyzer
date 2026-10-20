@@ -44,7 +44,7 @@ final class MarketData
     public function instrument(string $insCode): ?Instrument
     {
         $row = $this->db->one('SELECT * FROM instruments WHERE ins_code = ?', [$insCode]);
-        return $row ? new Instrument($row['ins_code'], $row['symbol'], $row['name'], $row['isin'], $row['market']) : null;
+        return $row ? Instrument::fromRow($row) : null;
     }
 
     /** Resolves a typed symbol through the registry or a search, and remembers it. */
@@ -52,24 +52,27 @@ final class MarketData
     {
         $row = $this->db->one('SELECT * FROM instruments WHERE symbol = ?', [Text::normalizeSymbol($symbol)]);
         if ($row) {
-            return new Instrument($row['ins_code'], $row['symbol'], $row['name'], $row['isin'], $row['market']);
+            return Instrument::fromRow($row);
         }
         $inst = $this->cdn->resolve($symbol);
         $this->remember($inst);
         return $inst;
     }
 
-    public function remember(Instrument $i, string $sector = ''): void
+    /** Stores or refreshes an instrument; empty classification fields never overwrite known ones. */
+    public function remember(Instrument $i, string $sector = '', string $subSector = '', string $board = ''): void
     {
-        $row = ['symbol' => Text::normalizeSymbol($i->symbol), 'name' => $i->name, 'isin' => $i->isin,
-                'market' => $i->market, 'updated_at' => date('Y-m-d H:i:s')];
-        if ($sector !== '') {
-            $row['sector'] = $sector;
+        $row = ['symbol' => Text::normalizeSymbol($i->symbol), 'updated_at' => date('Y-m-d H:i:s')];
+        foreach (['name' => $i->name, 'isin' => $i->isin, 'market' => $i->market, 'sector' => $sector ?: $i->sector,
+                  'sub_sector' => $subSector ?: $i->subSector, 'board' => $board ?: $i->board] as $col => $value) {
+            if ($value !== '') {
+                $row[$col] = $value;
+            }
         }
         if ($this->db->value('SELECT 1 FROM instruments WHERE ins_code = ?', [$i->insCode])) {
             $this->db->update('instruments', $row, ['ins_code' => $i->insCode]);
         } else {
-            $this->db->insert('instruments', ['ins_code' => $i->insCode] + $row + ['sector' => $sector]);
+            $this->db->insert('instruments', ['ins_code' => $i->insCode] + $row);
         }
     }
 
@@ -84,7 +87,8 @@ final class MarketData
      */
     public function bundles(array $insCodes, array $parts = self::PARTS_FULL, array &$errors = []): array
     {
-        $insCodes = array_values(array_unique(array_filter($insCodes)));
+        // Numeric insCodes turn into int array keys in PHP; normalise to strings at the boundary.
+        $insCodes = array_values(array_unique(array_filter(array_map('strval', $insCodes))));
         $paths = [];
         foreach ($insCodes as $c) {
             $paths += array_filter([
@@ -111,12 +115,18 @@ final class MarketData
 
         $out = [];
         foreach ($insCodes as $c) {
-            $inst = $this->instrument($c) ?? new Instrument($c, $c);
+            $info = (array) Field::get($data["info|$c"] ?? [], 'instrumentInfo', []);
+            $inst = $this->instrument($c);
+            if (!$inst && $info && trim((string) Field::get($info, 'lVal18AFC', '')) !== '') {
+                $inst = new Instrument($c, trim((string) Field::get($info, 'lVal18AFC', '')), trim((string) Field::get($info, 'lVal30', '')),
+                    (string) Field::get($info, 'cIsin', ''), trim((string) Field::get($info, 'flowTitle', '')));
+                $this->remember($inst);
+            }
+            $inst ??= new Instrument($c, $c);
             $raw = PriceHistory::fromClosingPriceDaily(Field::list($data["history|$c"] ?? [], 'closingPriceDaily'));
             if (in_array('history', $parts, true) && $raw->isEmpty()) {
                 $errors[$c] = $data["history|$c"] === null ? 'دریافت تاریخچه‌ی قیمت ممکن نشد' : 'تاریخچه‌ی قیمت خالی است';
             }
-            $info = (array) Field::get($data["info|$c"] ?? [], 'instrumentInfo', []);
             $bundle = new SymbolBundle(
                 $inst, $raw, $raw->adjusted(), $info,
                 Field::list($data["flow|$c"] ?? [], 'clientType'),
@@ -124,8 +134,9 @@ final class MarketData
                 (array) Field::get($data["client|$c"] ?? [], 'clientType', []),
                 Field::list($data["book|$c"] ?? [], 'bestLimits'),
             );
-            if ($info && ($sector = $bundle->sector()) !== '') {
-                $this->remember($inst, $sector);
+            if ($info && $inst->symbol !== $c && ($bundle->sector() !== '' || $bundle->subSector() !== '')
+                && ($bundle->sector() !== $inst->sector || $bundle->subSector() !== $inst->subSector || $bundle->board() !== $inst->board)) {
+                $this->remember($inst, $bundle->sector(), $bundle->subSector(), $bundle->board());
             }
             $out[$c] = $bundle;
         }

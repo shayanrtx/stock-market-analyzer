@@ -28,4 +28,28 @@ final class Text
         $s = str_replace([',', ' '], '', self::normalizeDigits(trim($s)));
         return is_numeric($s) ? (float) $s : null;
     }
+
+    /**
+     * Rial amount as toman with a readable unit: [«۷۲.۰», «میلیارد تومان»].
+     *
+     * @return array{0: string, 1: string}
+     */
+    public static function moneyParts(?float $rial): array
+    {
+        if ($rial === null) {
+            return ['-', ''];
+        }
+        $toman = $rial / 10;
+        $abs = abs($toman);
+        if ($abs >= 1e12) {
+            return [number_format($toman / 1e12, 1), 'هزار میلیارد تومان'];
+        }
+        if ($abs >= 1e9) {
+            return [number_format($toman / 1e9, 2), 'میلیارد تومان'];
+        }
+        if ($abs >= 1e6) {
+            return [number_format($toman / 1e6, 1), 'میلیون تومان'];
+        }
+        return [number_format($toman, 0), 'تومان'];
+    }
 }

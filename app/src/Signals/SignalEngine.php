@@ -26,6 +26,7 @@ final class SignalEngine
     public const BUY_MIN_SCORE = 60.0;
     public const SELL_MAX_SCORE = 45.0;
     public const MIN_REWARD_RISK = 1.5;
+    public const MIN_PROBABILITY = 0.45;  // target before stop in comparable past setups
     public const MIN_TRIGGER_SEVERITY = 2;
     public const HORIZON = 42;  // ~2 months of sessions
 
@@ -37,7 +38,7 @@ final class SignalEngine
     public function evaluate(SymbolContext $ctx, Snapshot $s, array $recent, PriceHistory $history, bool $held): ?Signal
     {
         $price = $s->price();
-        if (!$price || $history->count() < 120) {
+        if (!$price || $history->count() < 120 || $ctx->isQuiet()) {
             return null;
         }
         $strong = array_values(array_filter($recent, static fn (Insight $i) => $i->direction > 0 && $i->severity >= self::MIN_TRIGGER_SEVERITY));
@@ -74,7 +75,8 @@ final class SignalEngine
         }
         $odds = (new HistoricalStudy($h, $this->inflationAnnual))
             ->tradeOdds(($target / $price - 1) * 100, ($risk / $price) * 100, self::HORIZON, 1);
-        if (!$odds || $odds['expectancy_pct'] <= 0) {
+        if (!$odds || $odds['expectancy_pct'] <= 0 || $odds['win_rate'] < self::MIN_PROBABILITY
+            || $odds['win_rate'] <= $odds['loss_rate']) {
             return null;
         }
         $reasons = array_map(static fn (Insight $i) => $i->title . ': ' . $i->detail, array_slice($triggers, 0, 3));

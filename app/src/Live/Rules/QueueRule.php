@@ -29,7 +29,7 @@ final class QueueRule implements Rule
         $ratio = $ctx->avgValue ? $value / $ctx->avgValue : null;
         $severity = $ratio !== null && $ratio >= self::HEAVY ? 3 : ($ratio !== null && $ratio >= self::NOTABLE ? 2 : 1);
         $side = $q === 'buy' ? 'خرید' : 'فروش';
-        $detail = sprintf('حجم صف %s سهم به ارزش %s', number_format($s->queueVolume()), Support::mt($value));
+        $detail = sprintf('حجم صف %s سهم به ارزش %s', number_format($s->queueVolume()), Support::money($value));
         if ($ratio !== null) {
             $detail .= sprintf('، معادل %.1f برابر میانگین ارزش معاملات روزانه', $ratio);
         }

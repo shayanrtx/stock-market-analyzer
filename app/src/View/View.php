@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Sabadgardan\View;
 
 use Sabadgardan\Market\Jalali;
+use Sabadgardan\Market\Text;
 
 /**
  * Plain-PHP templates in ``views/``. Templates receive their data as variables plus ``$v``
@@ -15,9 +16,13 @@ final class View
 {
     private int $chartSeq = 0;
 
+    /** Per-instance prefix: fragments loaded asynchronously must not reuse the page's chart ids. */
+    private string $chartPrefix;
+
     /** @param array<string, mixed> $shared */
     public function __construct(private string $dir, private string $basePath, public array $shared = [])
     {
+        $this->chartPrefix = 'c' . bin2hex(random_bytes(3)) . '-';
     }
 
     /** @param array<string, mixed> $data */
@@ -102,18 +107,7 @@ final class View
     /** @return array{0: string, 1: string} formatted number and unit (toman) */
     public static function moneyParts(?float $rial): array
     {
-        if ($rial === null) {
-            return ['-', ''];
-        }
-        $toman = $rial / 10;
-        $abs = abs($toman);
-        if ($abs >= 1e9) {
-            return [number_format($toman / 1e9, 2), 'میلیارد تومان'];
-        }
-        if ($abs >= 1e6) {
-            return [number_format($toman / 1e6, 1), 'میلیون تومان'];
-        }
-        return [number_format($toman, 0), 'تومان'];
+        return Text::moneyParts($rial);
     }
 
     public function money(?float $rial, bool $signed = false, bool $colored = false): string
@@ -142,6 +136,15 @@ final class View
         return $gregorian === '' ? '' : Jalali::fromGregorianString($gregorian);
     }
 
+    /** "Y-m-d H:i:s" → Jalali date · H:i */
+    public function jdatetime(string $datetime): string
+    {
+        if ($datetime === '') {
+            return '';
+        }
+        return Jalali::fromGregorianString(substr($datetime, 0, 10)) . (strlen($datetime) >= 16 ? ' · ' . substr($datetime, 11, 5) : '');
+    }
+
     public function now(): string
     {
         return Jalali::fromGregorianString(date('Y-m-d')) . ' · ' . date('H:i');
@@ -150,16 +153,22 @@ final class View
     // ------------------------------------------------------------- widgets
 
     /** Container + JSON payload; ``assets/app.js`` turns it into an ECharts instance. */
-    public function chart(array $option, string $size = '', ?int $height = null): string
+    public function chart(array $option, ?string $size = '', ?int $height = null): string
     {
         if (!$option) {
             return '<div class="empty">داده‌ای برای نمودار نیست.</div>';
         }
-        $id = 'c' . (++$this->chartSeq);
+        $id = $this->chartPrefix . (++$this->chartSeq);
         $style = $height ? ' style="height:' . $height . 'px"' : '';
         $json = json_encode($option, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP);
         return '<div class="chart ' . $size . '" data-chart="' . $id . '"' . $style . '></div>'
             . '<script type="application/json" id="' . $id . '">' . $json . '</script>';
+    }
+
+    /** Badge naming the instrument kind (صندوق درآمد ثابت، حق تقدم، …), tinted by its family. */
+    public function assetTag(string $label, string $tone = ''): string
+    {
+        return $label === '' ? '' : '<span class="tag ' . $this->e($tone) . '">' . $this->e($label) . '</span>';
     }
 
     public function icon(string $name, int $size = 18): string

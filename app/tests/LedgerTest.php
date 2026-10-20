@@ -86,8 +86,11 @@ final class LedgerTest extends TestCase
     public function testFeeSchedule(): void
     {
         $f = new FeeSchedule();
-        $this->assertNear(3712, $f->fee('buy', 'سهام', 1000, 1000));
-        $this->assertNear(8800, $f->fee('sell', 'سهام', 1000, 1000));
-        $this->assertNear(1875, $f->fee('sell', 'صندوق', 1000, 1000));
+        $this->assertNear(3712, $f->fee('buy', 'stock', 1000, 1000));
+        $this->assertNear(8800, $f->fee('sell', 'stock', 1000, 1000));
+        $this->assertNear(1875, $f->fee('sell', 'fund', 1000, 1000));
+        $this->assertNear(725, $f->fee('sell', 'bond', 1000, 1000));
+        $this->assertNear(1030, $f->fee('buy', 'option', 1000, 1000));
+        $this->assertNear(3712, $f->fee('buy', 'something-else', 1000, 1000), 1e-6, 'unknown classes pay the stock rate');
     }
 }

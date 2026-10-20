@@ -28,8 +28,8 @@ final class SmartMoneyRule implements Rule
             return [];
         }
         $detail = sprintf('قدرت خریدار حقیقی %.2f (سرانه‌ی خرید %s، سرانه‌ی فروش %s)؛ خالص ورود پول حقیقی %s.', $power,
-            Support::mt($s->buyIVolume / $s->buyICount * $price), Support::mt($s->sellIVolume / $s->sellICount * $price),
-            Support::mt($s->individualNetVolume() * $price));
+            Support::money($s->buyIVolume / $s->buyICount * $price), Support::money($s->sellIVolume / $s->sellICount * $price),
+            Support::money($s->individualNetVolume() * $price));
         if ($power >= self::STRONG) {
             return [Insight::from($s, 'smart_money', 1, $power >= 3 ? 3 : 2, 'ورود پول هوشمند', $detail, ['power' => $power])];
         }

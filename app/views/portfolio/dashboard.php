@@ -2,17 +2,14 @@
 /** @var \Sabadgardan\View\View $v
  *  @var array $portfolio
  *  @var array $val       valuation: positions, closed, transactions, totals, errors
- *  @var array|null $performance */
+ *  @var array|null $performance
+ *  @var array<string, float> $fees  fee rates for the transaction drawer */
 use Sabadgardan\View\Charts;
 use Sabadgardan\View\View;
 
 $t = $val['totals'];
 $pid = (int) $portfolio['id'];
 $hasTx = (bool) $val['transactions'];
-$fees = [];
-foreach (array_keys(\Sabadgardan\Portfolio\FeeSchedule::DEFAULTS) as $k) {
-    $fees[$k] = (float) $GLOBALS['__fees'][$k] ?? 0;
-}
 ?>
 <div class="page-head">
   <div>
@@ -85,7 +82,7 @@ echo $v->card('ترکیب دارایی‌ها', $v->chart(Charts::donut($alloc),
 ?>
 
 <?php ob_start(); ?>
-<div class="table-wrap"><table class="sortable">
+<div class="table-wrap holdings-table"><table class="sortable">
   <thead><tr>
     <th data-sort="text">نماد</th><th data-sort="num">تعداد</th><th data-sort="num">میانگین خرید</th><th data-sort="num">قیمت پایانی</th>
     <th data-sort="num">امروز</th><th data-sort="num">ارزش روز</th><th data-sort="num">سود/زیان</th><th data-sort="num">بازده</th>
@@ -95,8 +92,8 @@ echo $v->card('ترکیب دارایی‌ها', $v->chart(Charts::donut($alloc),
   <?php foreach ($val['positions'] as $p): ?>
     <tr>
       <td><div class="symbol-cell"><span class="symbol-badge"><?= $v->e(mb_substr($p['symbol'], 0, 2)) ?></span>
-        <div><a href="<?= $v->url('stock', ['ins' => $p['ins_code']]) ?>"><b><?= $v->e($p['symbol']) ?></b></a>
-        <span class="sub"><?= $v->e($p['name'] ?: $p['type']) ?><?= $p['status'] && $p['status'] !== 'مجاز' ? ' · ' . $v->e($p['status']) : '' ?></span></div></div></td>
+        <div><a href="<?= $v->url('stock', ['ins' => $p['ins_code']]) ?>"><b><?= $v->e($p['symbol']) ?></b></a> <?= $v->assetTag($p['class'], $p['class_tone']) ?>
+        <span class="sub"><?= $v->e($p['name']) ?><?= $p['status'] && $p['status'] !== 'مجاز' ? ' · ' . $v->e($p['status']) : '' ?></span></div></div></td>
       <td data-v="<?= $p['quantity'] ?>"><?= $v->num($p['quantity']) ?></td>
       <td data-v="<?= $p['avg_cost'] ?>"><?= $v->num($p['avg_cost']) ?></td>
       <td data-v="<?= $p['close'] ?>"><?= $v->num($p['close']) ?><?php if ($p['last'] && $p['close'] && abs($p['last'] - $p['close']) > 0.5): ?><span class="sub">آخرین <?= $v->num($p['last']) ?></span><?php endif; ?></td>
@@ -106,8 +103,8 @@ echo $v->card('ترکیب دارایی‌ها', $v->chart(Charts::donut($alloc),
       <td data-v="<?= $p['unrealized_pct'] ?>"><?= $v->pct($p['unrealized_pct']) ?></td>
       <td data-v="<?= $p['weight'] ?>"><?= $v->weightBar($p['weight']) ?></td>
       <td><div class="row-actions">
-        <button class="btn ghost sm" type="button" data-open-drawer data-ins="<?= $v->e($p['ins_code']) ?>" data-symbol="<?= $v->e($p['symbol']) ?>" data-type="buy">خرید</button>
-        <button class="btn ghost sm" type="button" data-open-drawer data-ins="<?= $v->e($p['ins_code']) ?>" data-symbol="<?= $v->e($p['symbol']) ?>" data-type="sell">فروش</button>
+        <button class="icon-btn sm buy" type="button" data-open-drawer data-ins="<?= $v->e($p['ins_code']) ?>" data-symbol="<?= $v->e($p['symbol']) ?>" data-type="buy" title="ثبت خرید" aria-label="ثبت خرید <?= $v->e($p['symbol']) ?>"><?= $v->icon('plus', 15) ?></button>
+        <button class="icon-btn sm sell" type="button" data-open-drawer data-ins="<?= $v->e($p['ins_code']) ?>" data-symbol="<?= $v->e($p['symbol']) ?>" data-type="sell" title="ثبت فروش" aria-label="ثبت فروش <?= $v->e($p['symbol']) ?>"><?= $v->icon('minus', 15) ?></button>
       </div></td>
     </tr>
   <?php endforeach; ?>
@@ -117,13 +114,35 @@ echo $v->card('ترکیب دارایی‌ها', $v->chart(Charts::donut($alloc),
     <td><?= $v->money($t['market_value']) ?></td><td><?= $v->money($t['unrealized'], true, true) ?></td><td><?= $v->pct($t['unrealized_pct']) ?></td><td></td><td></td>
   </tr></tfoot>
 </table></div>
+<div class="holding-cards">
+  <?php foreach ($val['positions'] as $p): ?>
+    <div class="hc">
+      <div class="hc-head">
+        <a href="<?= $v->url('stock', ['ins' => $p['ins_code']]) ?>"><b><?= $v->e($p['symbol']) ?></b></a>
+        <?= $v->assetTag($p['class'], $p['class_tone']) ?>
+        <span class="faint"><?= $v->num($p['quantity']) ?> × <?= $v->num($p['avg_cost']) ?></span>
+        <span class="spacer"></span><?= $v->pct($p['unrealized_pct']) ?>
+      </div>
+      <div class="hc-grid">
+        <div><span>ارزش روز</span><?= $v->money($p['market_value']) ?></div>
+        <div><span>سود/زیان</span><?= $v->money($p['unrealized'], true, true) ?></div>
+        <div><span>امروز</span><?= $v->pct($p['change_pct'], 2) ?></div>
+        <div><span>وزن</span><?= $v->weightBar($p['weight']) ?></div>
+      </div>
+      <div class="hc-actions">
+        <button class="btn secondary sm" type="button" data-open-drawer data-ins="<?= $v->e($p['ins_code']) ?>" data-symbol="<?= $v->e($p['symbol']) ?>" data-type="buy"><?= $v->icon('plus', 14) ?>خرید</button>
+        <button class="btn secondary sm" type="button" data-open-drawer data-ins="<?= $v->e($p['ins_code']) ?>" data-symbol="<?= $v->e($p['symbol']) ?>" data-type="sell"><?= $v->icon('minus', 14) ?>فروش</button>
+      </div>
+    </div>
+  <?php endforeach; ?>
+</div>
 <p class="faint" style="font-size:12px;margin:10px 0 0">سود و زیان با کسر کارمزد فروش (ارزش خالص فروش) محاسبه شده است، همان‌طور که در صورت‌حساب کارگزاری می‌بینید.</p>
 <?php echo $v->card('دارایی‌ها', (string) ob_get_clean(), 12, 'holdings'); ?>
 
 <?php
 if ($performance && count($performance['monthly']) > 1) {
     $monthly = array_slice(array_map(static fn ($x) => $x / 10, $performance['monthly']), -12, null, true);
-    echo $v->card('سود و زیان ماهانه', $v->chart(Charts::bars($monthly, 'سود و زیان', 'fn:tomanAxis', true), 'short'), 6, 'monthly_pnl', 'ماه‌های شمسی');
+    echo $v->card('سود و زیان ماهانه', $v->chart(Charts::bars($monthly, 'سود و زیان', 'fn:tomanLabel', true), 'short'), 6, 'monthly_pnl', 'ماه‌های شمسی');
 }
 $bySymbol = [];
 foreach ($val['positions'] as $p) {
@@ -172,6 +191,4 @@ if ($bySymbol) {
   </form>
 </section>
 
-<?php
-// The drawer is rendered after the main content (fixed position) by the layout's $after slot.
-?>
+<?= $v->partial('partials/tx_drawer', ['portfolio' => $portfolio, 'fees' => $fees]) ?>

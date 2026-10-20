@@ -35,7 +35,7 @@ final class Config
     ];
 
     /** @param array<string, mixed> $values */
-    private function __construct(private array $values, public readonly string $path)
+    private function __construct(private array $values, public readonly string $path, private bool $inMemory = false)
     {
     }
 
@@ -49,12 +49,12 @@ final class Config
     /** @param array<string, mixed> $values */
     public static function fromArray(array $values): self
     {
-        return new self(self::merge(self::DEFAULTS, $values), '');
+        return new self(self::merge(self::DEFAULTS, $values), '', true);
     }
 
     public function exists(): bool
     {
-        return $this->path !== '' && is_file($this->path);
+        return $this->inMemory || ($this->path !== '' && is_file($this->path));
     }
 
     public function get(string $key, mixed $default = null): mixed

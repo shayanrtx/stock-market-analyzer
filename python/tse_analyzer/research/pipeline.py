@@ -4,12 +4,15 @@
 2. picks the universe (the most traded shares of the market, plus portfolio.csv / watchlist.txt);
 3. brings the local price store up to date (resumable: fresh symbols are skipped on a re-run),
    the index, and the macro drivers;
-4. scores every symbol at every month end with data up to that day, and measures the score,
+4. tests short-term trading, 1 to 5 sessions, after costs and queues (shortterm.py);
+5. scores every symbol at every month end with data up to that day, and measures the score,
    its factors, the «احتمال رشد» figure and the candidate ideas (calibrate.py);
-5. replays the site's buy rule (signals.py) and the market-level studies (market.py);
-6. writes a folder with the full log, a plain-language report with the accuracy summary first,
+6. replays the site's buy rule (signals.py) and the market-level studies (market.py);
+7. writes a folder with the full log, a plain-language report with the accuracy summary first,
    machine-readable results, the per-observation data, and weights.json only if it passed the
    out-of-sample test.
+
+``short_only`` stops after step 4 (a few minutes instead of the whole run).
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ import pandas as pd
 
 from ..client import TEDPIX, TseGatewayClient, TsetmcClient, TsetmcError
 from ..store import PriceStore
-from . import calibrate, macro, market, signals
+from . import calibrate, macro, market, shortterm, signals
 from .common import MIN_HISTORY, load_index, load_universe
 from .universe import market_universe
 
@@ -42,7 +45,7 @@ log = logging.getLogger("research")
 def run(top: int = 200, db: str = "prices.sqlite", out: str = "research-output", drivers_dir: str = "drivers",
         workers: int | None = None, skip_update: bool = False, step: int = signals.STEP, cash_rate: float = 0.25,
         timeout: float = 30.0, extra_files: tuple[str, ...] = ("portfolio.csv", "watchlist.txt"),
-        max_age_hours: float = 20.0) -> int:
+        max_age_hours: float = 20.0, short_only: bool = False, inflation: float = shortterm.INFLATION) -> int:
     folder = Path(out) / datetime.now().strftime("%Y-%m-%d_%H%M")
     folder.mkdir(parents=True, exist_ok=True)
     _setup_logging(folder / "research.log")
@@ -53,7 +56,7 @@ def run(top: int = 200, db: str = "prices.sqlite", out: str = "research-output",
              pd.__version__, workers)
     try:
         return _run(folder, top, db, drivers_dir, workers, skip_update, step, cash_rate, timeout, extra_files,
-                    max_age_hours, started)
+                    max_age_hours, started, short_only, inflation)
     except KeyboardInterrupt:
         log.warning("متوقف شد. داده‌های دریافت‌شده در %s مانده‌اند؛ اجرای دوباره از همان‌جا ادامه می‌دهد.", db)
         return 130
@@ -64,7 +67,8 @@ def run(top: int = 200, db: str = "prices.sqlite", out: str = "research-output",
 
 
 def _run(folder: Path, top: int, db: str, drivers_dir: str, workers: int, skip_update: bool, step: int,
-         cash_rate: float, timeout: float, extra_files: tuple[str, ...], max_age_hours: float, started: float) -> int:
+         cash_rate: float, timeout: float, extra_files: tuple[str, ...], max_age_hours: float, started: float,
+         short_only: bool = False, inflation: float = shortterm.INFLATION) -> int:
     client = TsetmcClient(timeout=timeout, max_retries=3)
     gateway = TseGatewayClient(timeout=timeout, max_retries=2)
 
@@ -110,7 +114,24 @@ def _run(folder: Path, top: int, db: str, drivers_dir: str, workers: int, skip_u
              first.strftime("%Y-%m-%d"), last.strftime("%Y-%m-%d"),
              f"{len(index)} روز" if index is not None else "ندارد", "، ".join(macro.LABELS[k] for k in drivers) or "هیچ")
 
-    _step(4, "ارزیابی ماهانه‌ی امتیاز و عامل‌ها (بدون استفاده از داده‌ی آینده)")
+    _step(4, "آزمون معامله‌ی کوتاه‌مدت (۱، ۲ و ۵ جلسه، بعد از کارمزد و با رعایت صف)")
+    t0 = time.time()
+    short = shortterm.run(universe, index, inflation=inflation, progress=_progress("روش", 0, "روش خرید و فروش"))
+    log.info("%d روز معاملاتی و %d سهم در %.0f ثانیه", short.days, short.symbols, time.time() - t0)
+    if short_only:
+        _step(5, "نوشتن نتایج")
+        summary = "\n".join(["═" * 70, "خلاصه‌ی دقت معامله‌ی کوتاه‌مدت (روی داده‌ی واقعی، فقط با اطلاعات همان روز)",
+                             "═" * 70, *shortterm.summary_lines(short), "═" * 70])
+        (folder / "report.txt").write_text(summary + "\n\n" + shortterm.report_text(short) + "\n", encoding="utf-8")
+        _write_short(folder, short)
+        (folder / "summary.json").write_text(json.dumps({
+            "generated_at": datetime.now().isoformat(timespec="seconds"), "symbols": len(universe),
+            "shortterm": short.to_json()}, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
+        log.info("\n%s", summary)
+        log.info("پایان در %.0f دقیقه. گزارش کامل: %s", (time.time() - started) / 60, (folder / "report.txt").resolve())
+        return 0
+
+    _step(5, "ارزیابی ماهانه‌ی امتیاز و عامل‌ها (افق ۳ ماهه، بدون استفاده از داده‌ی آینده)")
     t0 = time.time()
     observations = calibrate.collect(universe, index, workers=workers, drivers=drivers or None,
                                      progress=_progress("ارزیابی", len(universe)))
@@ -120,13 +141,13 @@ def _run(folder: Path, top: int, db: str, drivers_dir: str, workers: int, skip_u
     cal = calibrate.calibrate(universe, index, workers=workers, observations=observations, drivers=drivers or None,
                               progress=_progress("دارونما", 0, "آزمون"))
 
-    _step(5, "شبیه‌سازی قانون خرید سایت")
+    _step(6, "شبیه‌سازی قانون خرید سایت")
     t0 = time.time()
     sig = signals.run(universe, index, step=step, workers=workers, progress=_progress("شبیه‌سازی", len(universe)))
     log.info("%d معامله (قانون سایت)، %d (قانون قبلی) و %d (بدون فیلتر) در %.0f ثانیه", len(sig.trades), len(sig.plain),
              len(sig.unfiltered), time.time() - t0)
 
-    _step(6, "مطالعات سطح بازار")
+    _step(7, "مطالعات سطح بازار")
     studies = {
         "seasonality": market.seasonality(index),
         "flow_sentiment": market.flow_sentiment(universe, index),
@@ -135,20 +156,23 @@ def _run(folder: Path, top: int, db: str, drivers_dir: str, workers: int, skip_u
         "macro_context": macro.market_context(index, drivers),
     }
 
-    _step(7, "نوشتن نتایج")
-    summary = accuracy_summary(cal, sig, studies, universe, first, last, drivers)
-    report = "\n\n".join([summary, calibrate.report_text(cal), signals.report_text(sig), studies_text(studies)])
+    _step(8, "نوشتن نتایج")
+    summary = accuracy_summary(cal, sig, studies, universe, first, last, drivers, short)
+    report = "\n\n".join([summary, shortterm.report_text(short), calibrate.report_text(cal), signals.report_text(sig),
+                           studies_text(studies)])
     (folder / "report.txt").write_text(report + "\n", encoding="utf-8")
     weights = folder / ("weights.json" if cal.accepted else "weights.rejected.json")
     cal.save(weights)
     _write_observations(folder / "observations.csv", cal.observations)
     _write_trades(folder / "trades.csv", sig.trades)
+    _write_short(folder, short)
     (folder / "summary.json").write_text(json.dumps({
         "generated_at": datetime.now().isoformat(timespec="seconds"), "symbols": len(universe),
         "from": first.strftime("%Y-%m-%d"), "to": last.strftime("%Y-%m-%d"),
         "calibration": cal.to_json(), "signals": {"site": sig.site, "previous_rule": sig.baseline,
                                                  "no_filter": sig.no_filter, "by_regime": sig.by_regime},
-        "studies": studies}, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
+        "studies": studies, "shortterm": short.to_json()}, ensure_ascii=False, indent=2, default=_json_default),
+        encoding="utf-8")
     log.info("\n%s", summary)
     log.info("پایان در %.0f دقیقه. گزارش کامل: %s", (time.time() - started) / 60, (folder / "report.txt").resolve())
     if cal.accepted:
@@ -242,18 +266,20 @@ def _progress(label: str, total: int, unit: str = "نماد"):
 # ------------------------------------------------------------- the summary
 
 def accuracy_summary(cal: calibrate.Calibration, sig: signals.SignalReport, studies: dict, universe, first, last,
-                     drivers: dict) -> str:
+                     drivers: dict, short: shortterm.ShortTerm | None = None) -> str:
     a = cal.accuracy
     v = cal.validation
     test = v.get("default_test") or {}
     ic, test_ic = a["ic"], (test.get("ic") or {})
-    lines = ["═" * 70, "خلاصه‌ی دقت (روی داده‌ی واقعی و فقط با اطلاعاتی که در همان روز در دسترس بود)", "═" * 70,
-             f"داده: {len(universe)} نماد، {first:%Y-%m-%d} تا {last:%Y-%m-%d}، {a['months']} ماه، "
-             f"{a['observations']} مشاهده (هر نماد در پایان هر ماه شمسی).", ""]
+    lines = ["═" * 70, "خلاصه‌ی دقت (روی داده‌ی واقعی و فقط با اطلاعاتی که در همان روز در دسترس بود)", "═" * 70]
+    if short is not None:
+        lines += shortterm.summary_lines(short) + ["", "─" * 70, "افق‌های بلندتر (برای مرجع):"]
+    lines += [f"داده: {len(universe)} نماد، {first:%Y-%m-%d} تا {last:%Y-%m-%d}، {a['months']} ماه، "
+              f"{a['observations']} مشاهده (هر نماد در پایان هر ماه شمسی).", ""]
 
     # 1. the score
     verdict = _score_verdict(ic, test_ic)
-    lines.append(f"۱) امتیاز پتانسیل رشد: {verdict}")
+    lines.append(f"۱) امتیاز پتانسیل رشد (افق ۳ ماهه): {verdict}")
     lines.append(f"   • همبستگی رتبه‌ای امتیاز با بازده ۳ ماه بعد (IC ماهانه): {_n(ic['mean'], 3)} "
                  f"(t={_n(ic['t'], 1)}، مثبت در {_p(ic['positive_share'])} ماه‌ها)"
                  + (f"؛ در دوره‌ی آزمون جداگانه {_n(test_ic.get('mean'), 3)}" if test_ic else ""))
@@ -279,7 +305,7 @@ def accuracy_summary(cal: calibrate.Calibration, sig: signals.SignalReport, stud
 
     # 3. signals
     s, old, free = sig.site, sig.baseline, sig.no_filter
-    lines.append(f"۳) سیگنال خرید با قانون فعلی سایت: {_signal_verdict(s, free)}")
+    lines.append(f"۳) سیگنال خرید با قانون فعلی سایت (تا ۴۲ جلسه): {_signal_verdict(s, free)}")
     if s.get("trades"):
         ci = s["win_rate_ci"]
         lines.append(f"   • {s['trades']} معامله؛ سودده {_p(s['win_rate'])} (بازه‌ی ۹۵٪: {_p(ci[0])} تا {_p(ci[1])})، "
@@ -411,6 +437,18 @@ def _write_observations(path: Path, observations: list) -> None:
                         "" if o.prob_up is None else f"{o.prob_up:.3f}", f"{o.fwd_pct:.3f}",
                         "" if o.excess_pct is None else f"{o.excess_pct:.3f}",
                         *("" if o.candidates.get(n) is None else f"{o.candidates[n]:.5f}" for n in names)])
+
+
+def _write_short(folder: Path, short: shortterm.ShortTerm) -> None:
+    """The test-period picks of every short-term method: what would have been bought, and how it went."""
+    if short.picks is None or short.picks.empty:
+        return
+    picks = short.picks.copy()
+    picks["date"] = picks["date"].dt.strftime("%Y-%m-%d")
+    picks["return_pct"] = (picks.pop("return") * 100).round(2)
+    picks["score"] = picks["score"].round(3)
+    picks[["target", "date", "symbol", "score", "return_pct"]].to_csv(folder / "shortterm_picks.csv", index=False,
+                                                                      encoding="utf-8-sig")
 
 
 def _write_trades(path: Path, trades: list) -> None:

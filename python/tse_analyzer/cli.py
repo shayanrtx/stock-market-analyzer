@@ -280,7 +280,8 @@ def cmd_research(client: TsetmcClient, args: argparse.Namespace) -> int:
     workers = args.workers or max(1, (os.cpu_count() or 2) - 1)
     if args.action == "run":
         return pipeline.run(top=args.top, db=args.db, out=args.output, drivers_dir=args.drivers, workers=workers,
-                            skip_update=args.skip_update, step=args.step, cash_rate=args.cash_rate, timeout=args.timeout)
+                            skip_update=args.skip_update, step=args.step, cash_rate=args.cash_rate, timeout=args.timeout,
+                            short_only=args.short_only, inflation=args.inflation)
     with PriceStore(args.db) as store:
         universe = load_universe(store, args.symbols or None, args.min_history)
         index = load_index(store)
@@ -501,6 +502,9 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("--drivers", default="drivers", help="پوشه‌ی CSV محرک‌های کلان دلخواه (key.csv: date,value)")
     rs.add_argument("--skip-update", action="store_true", help="run: بدون دریافت داده، فقط با پایگاه داده‌ی موجود")
     rs.add_argument("--cash-rate", type=float, default=0.25, help="run: سود سالانه‌ی بخش نقد در هدف‌گذاری نوسان")
+    rs.add_argument("--short-only", action="store_true",
+                    help="run: فقط آزمون معامله‌ی کوتاه‌مدت (۱ تا ۵ جلسه)؛ چند دقیقه به جای کل مسیر")
+    rs.add_argument("--inflation", type=float, default=0.89, help="run: تورم سالانه برای مقایسه (پیش‌فرض 0.89)")
     rs.add_argument("--symbols", nargs="*", default=[], help="زیرمجموعه‌ای از نمادهای پایگاه داده")
     rs.add_argument("--horizon", type=int, default=0, help="افق به جلسه (پیش‌فرض: ۶۳ کالیبراسیون، ۴۲ سیگنال)")
     rs.add_argument("--min-history", type=int, default=260, help="حداقل جلسات تاریخچه پیش از ارزیابی")

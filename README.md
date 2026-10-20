@@ -180,17 +180,27 @@ python/                the original Python analyzer and CLI (pytest)
 | <span dir="ltr">`research.log`</span> | لاگ کامل همه‌ی مراحل، خطاها و منبع هر داده |
 | <span dir="ltr">`weights.json`</span> | فقط اگر وزن‌های جدید از آزمون خارج از نمونه قبول شوند ساخته می‌شود؛ آن را در پوشه‌ی `config` سایت آپلود کنید |
 | <span dir="ltr">`weights.rejected.json`</span> | اگر قبول نشوند: همان نتایج، بدون اثر روی سایت |
+| <span dir="ltr">`shortterm_picks.csv`</span> | سهم‌هایی که روش‌های کوتاه‌مدت هر روزِ دوره‌ی آزمون می‌خریدند و نتیجه‌ی هر کدام بعد از کارمزد |
 | <span dir="ltr">`summary.json`</span>، <span dir="ltr">`observations.csv`</span>، <span dir="ltr">`trades.csv`</span> | داده‌ی خام برای بررسی دقیق‌تر (با Excel باز می‌شوند) |
 
 ۶. فایل‌های <span dir="ltr">`report.txt`</span> و <span dir="ltr">`research.log`</span> را بفرستید تا نتیجه را با هم تفسیر کنیم.
 
 گزینه‌ها: <span dir="ltr">`research.bat --top 100`</span> (نمادهای کمتر و سریع‌تر)،
-<span dir="ltr">`research.bat --skip-update`</span> (تحلیل دوباره بدون دریافت داده).
+<span dir="ltr">`research.bat --skip-update`</span> (تحلیل دوباره بدون دریافت داده)،
+<span dir="ltr">`research.bat --short-only`</span> (فقط آزمون معامله‌ی کوتاه‌مدت، چند دقیقه)،
+<span dir="ltr">`research.bat --inflation 0.89`</span> (تورم سالانه برای مقایسه).
 هر محرک کلانی را هم می‌شود دستی اضافه کرد: یک فایل <span dir="ltr">`python/drivers/oil.csv`</span> (یا usd، usdt، gold، coin،
 btc) با دو ستون تاریخ و مقدار؛ تاریخ شمسی یا میلادی.
 
 ### آزمایشگاه چه چیزهایی را می‌سنجد
 
+- **معامله‌ی کوتاه‌مدت (۱، ۲ و ۵ جلسه):** خرید با آخرین قیمت امروز یا قیمت اولیه‌ی فردا و فروش ۱، ۲ یا ۵ جلسه بعد.
+  کارمزد رفت‌وبرگشت (حدود ۱٫۲۵٪) از همه‌ی بازده‌ها کم می‌شود. خرید در صف خرید ممکن فرض نمی‌شود. فروش در صف فروش، یا در
+  نمادی که متوقف است، تا اولین روز ممکن عقب می‌افتد. دامنه‌ی نوسان هر روز از خود بازار خوانده می‌شود.
+  عامل‌های روزانه سنجیده می‌شوند: قدرت خریدار حقیقی، ورود پول حقیقی، آخرین قیمت نسبت به پایانی، حجم، صف‌ها، بازده اخیر و … .
+  انتخاب عامل‌ها روی ۷۰٪ اول روزها با |t| ≥ ۳ انجام می‌شود. «امتیاز کوتاه‌مدت» فقط روی ۳۰٪ آخر آزموده می‌شود: ۵ سهم برتر هر
+  روز در برابر خرید تصادفی و شاخص کل. نتیجه به زبان ماهانه هم گزارش می‌شود: میانگین سود ماه، درصد ماه‌هایی که به ۱۵٪
+  رسید، ماه‌های منفی و بیشترین افت سرمایه، در کنار تورم.
 - **امتیاز پتانسیل رشد:** هر نماد در پایان هر ماه شمسی فقط با اطلاعات همان روز امتیاز می‌گیرد و با بازده ۳ ماه بعدش
   (منهای شاخص کل) مقایسه می‌شود. همبستگی در هر ماه جداگانه حساب می‌شود و معناداری با اصلاح Newey-West برای همپوشانی
   دوره‌ها؛ وزن‌ها روی ۷۰٪ اول ماه‌ها ساخته و روی ۳۰٪ آخر آزموده می‌شوند.
@@ -212,6 +222,7 @@ btc) با دو ستون تاریخ و مقدار؛ تاریخ شمسی یا می
 
 ```bash
 tse-analyzer store update --market --macro      # only the data (200 most traded shares + macro drivers)
+tse-analyzer research run --skip-update --short-only   # short-term test (1, 2, 5 sessions) on the stored data
 tse-analyzer research calibrate --out weights.json
 tse-analyzer research signals
 tse-analyzer performance --ledger ledger.csv    # TWR / XIRR of your own trades

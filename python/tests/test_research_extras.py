@@ -198,13 +198,35 @@ def test_offline_run_writes_the_report_and_log(tmp_path, monkeypatch):
     assert {"research.log", "report.txt", "summary.json", "observations.csv", "trades.csv"} <= names
     assert ("weights.json" in names) != ("weights.rejected.json" in names)
     report = (folder / "report.txt").read_text(encoding="utf-8")
-    for part in ("خلاصه‌ی دقت", "۱) امتیاز پتانسیل رشد", "۲) «احتمال رشد ۳ ماهه»", "۳) سیگنال خرید", "۴) وزن‌های کالیبره",
-                 "۵) ایده‌های آزمایشی", "۶) بازار", "باد موافق دلار", "دارونما"):
+    for part in ("خلاصه‌ی دقت", "۰) معامله‌ی کوتاه‌مدت", "۱) امتیاز پتانسیل رشد", "۲) «احتمال رشد ۳ ماهه»",
+                 "۳) سیگنال خرید", "۴) وزن‌های کالیبره", "۵) ایده‌های آزمایشی", "۶) بازار", "باد موافق دلار", "دارونما"):
         assert part in report, part
     log = (folder / "research.log").read_text(encoding="utf-8")
     assert "مرحله‌ی 4" in log and "پایان در" in log
     summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))
     assert summary["symbols"] == 10 and "site" in summary["signals"] and "seasonality" in summary["studies"]
+    assert "shortterm" in summary
+
+
+def test_short_only_run(tmp_path, monkeypatch):
+    from test_shortterm import market
+    universe, index = market(symbols=25, n=700)
+    db = tmp_path / "prices.sqlite"
+    from tse_analyzer.store import PriceStore
+    with PriceStore(db) as store:
+        for sym in universe:
+            store.save_history(sym.ins_code, sym.raw, sym.symbol)
+            store.save_client_types(sym.ins_code, sym.flows)
+        store.save_series("index:32097828799138957", index)
+    monkeypatch.chdir(tmp_path)
+    assert pipeline.run(db=str(db), out="out", skip_update=True, workers=1, short_only=True) == 0
+    folder = next((tmp_path / "out").iterdir())
+    report = (folder / "report.txt").read_text(encoding="utf-8")
+    assert "۰) معامله‌ی کوتاه‌مدت" in report and "قدرت خریدار حقیقی امروز" in report
+    assert "۱) امتیاز پتانسیل رشد" not in report  # the 3-month part is skipped
+    picks = (folder / "shortterm_picks.csv").read_text(encoding="utf-8-sig").splitlines()
+    assert picks[0] == "target,date,symbol,score,return_pct" and len(picks) > 100
+    assert "مرحله‌ی 5" in (folder / "research.log").read_text(encoding="utf-8")
 
 
 def test_offline_run_on_an_empty_store_fails_clearly(tmp_path, monkeypatch):

@@ -80,6 +80,11 @@ def _run(folder: Path, top: int, db: str, drivers_dir: str, workers: int, skip_u
         with PriceStore(db) as store:
             symbols = [i["symbol"] for i in store.instruments() if i["symbol"]]
         log.info("  %d نماد در پایگاه داده", len(symbols))
+        if not symbols:
+            log.error("پایگاه داده‌ی %s خالی است؛ احتمالاً پوشه عوض شده یا از نو از ZIP باز شده است. "
+                      "یک بار بدون --skip-update اجرا کنید تا داده دوباره دریافت شود (حدود ۵ تا ۱۰ دقیقه).",
+                      Path(db).resolve())
+            return 3
     else:
         _step(1, "آزمایش اتصال")
         reach = _check_connections(client, gateway)

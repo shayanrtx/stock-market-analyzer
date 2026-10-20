@@ -234,4 +234,4 @@ def test_offline_run_on_an_empty_store_fails_clearly(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert pipeline.run(db=str(tmp_path / "empty.sqlite"), out="out", skip_update=True, workers=1) == 3
     log = next((tmp_path / "out").iterdir()) / "research.log"
-    assert "هیچ نمادی" in log.read_text(encoding="utf-8")
+    assert "خالی است" in log.read_text(encoding="utf-8") and "بدون --skip-update" in log.read_text(encoding="utf-8")

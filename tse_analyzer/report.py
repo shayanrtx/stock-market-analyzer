@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from .analysis import StockAnalysis
+from .portfolio import PortfolioReport
+from .screener import MoverRow, SmartMoneyRow
 
 RETURN_LABELS = {"1w": "یک هفته", "1m": "یک ماه", "3m": "سه ماه", "6m": "شش ماه", "1y": "یک سال"}
 
@@ -76,6 +78,61 @@ def indices_text(indices: list[dict], effects: list[dict]) -> str:
                 f"  {inst.get('lVal18AFC', e.get('insCode', '')):<12} "
                 f"{fmt_num(e.get('instEffectValue'), 1):>12}"
             )
+    return "\n".join(lines)
+
+
+def screen_text(rows: list[SmartMoneyRow] | list[MoverRow]) -> str:
+    if not rows:
+        return "نتیجه‌ای پیدا نشد."
+    if isinstance(rows[0], SmartMoneyRow):
+        lines = ["ورود پول هوشمند (قدرت خریدار حقیقی):"]
+        lines += [
+            f"  {r.symbol:<12} قدرت {r.buyer_power:5.2f}   خریداران {r.buyers:>6,}   "
+            f"خالص حقیقی {fmt_num(r.individual_net_volume)} سهم   {r.name}"
+            for r in rows
+        ]
+    else:
+        lines = ["دیده‌بان رسمی (webgw):"]
+        lines += [
+            f"  {r.symbol:<12} پایانی {fmt_pct(r.close_pct):>8}   آخرین {fmt_pct(r.last_pct):>8}   "
+            f"ارزش {fmt_num(_to_mt(r.trade_value))} م.ت   {r.industry}"
+            for r in rows
+        ]
+    return "\n".join(lines)
+
+
+def portfolio_text(r: PortfolioReport) -> str:
+    lines = [
+        f"ارزش پرتفو: {fmt_num(_to_mt(r.total_value), 1)} م.ت   "
+        f"سود/زیان امروز: {fmt_num(_to_mt(r.day_pnl), 1)} م.ت ({fmt_pct(r.day_pct)})",
+    ]
+    if r.cost_pnl is not None:
+        lines.append(f"سود/زیان نسبت به قیمت خرید: {fmt_num(_to_mt(r.cost_pnl), 1)} م.ت")
+    lines += ["", f"  {'نماد':<12} {'تعداد':>9} {'قیمت':>9} {'امروز':>8} {'وزن':>6}  سیگنال"]
+    for p in r.positions:
+        if p.error:
+            lines.append(f"  {p.holding.symbol:<12} {fmt_num(p.holding.quantity):>9}  خطا: {p.error}")
+            continue
+        lines.append(
+            f"  {p.holding.symbol:<12} {fmt_num(p.holding.quantity):>9} {fmt_num(p.close):>9} "
+            f"{fmt_pct(p.day_change_pct):>8} {p.weight:5.1f}%  {p.verdict} ({p.score:+d})"
+        )
+    if r.sectors:
+        lines += ["", "ترکیب صنعت:"]
+        lines += [f"  {name:<30} {w:5.1f}%" for name, w in r.sectors.items()]
+    if r.risk:
+        k = r.risk
+        lines += [
+            "",
+            f"ریسک (ترکیب فعلی در {k['days']:.0f} روز اخیر، قیمت تعدیل‌نشده):",
+            f"  نوسان سالانه {fmt_num(k['volatility_annual_pct'], 1)}%   "
+            f"بیشترین افت {fmt_num(k['max_drawdown_pct'], 1)}%",
+            f"  بازده یک ماه {fmt_pct(k.get('return_1m_pct'))}   سه ماه {fmt_pct(k.get('return_3m_pct'))}   "
+            f"دوره {fmt_pct(k.get('return_1y_pct'))}",
+        ]
+    if r.warnings:
+        lines += ["", "هشدارها:"] + [f"  ! {w}" for w in r.warnings]
+    lines += ["", "این خروجی تحلیل خودکار است و توصیه‌ی خرید یا فروش نیست."]
     return "\n".join(lines)
 
 

@@ -6,3 +6,5 @@ __pycache__/
 .cache/
 build/
 dist/
+diagnostics/
+portfolio.csv

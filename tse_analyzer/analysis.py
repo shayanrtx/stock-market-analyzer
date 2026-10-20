@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from . import indicators as ind
+from .client import field as pick
 
 
 @dataclass
@@ -27,6 +28,7 @@ class StockAnalysis:
     indicators: dict[str, float | None]
     money_flow: dict[str, float | None]
     signals: list[Signal] = field(default_factory=list)
+    ins_code: str = ""
 
     @property
     def score(self) -> int:
@@ -81,11 +83,14 @@ def money_flow(client_type: dict, price: float | None) -> dict[str, float | None
 
     Per-capita buy/sell (سرانه خرید/فروش) is volume per trader times price, in rial.
     Buyer power (قدرت خریدار) > 1 means individual buyers are bigger than sellers,
-    commonly read as "smart money" entering.
+    commonly read as "smart money" entering. It does not depend on price.
     """
-    def g(key: str) -> float:
-        value = client_type.get(key)
-        return float(value) if isinstance(value, (int, float)) else 0.0
+    def g(*names: str) -> float:
+        value = pick(client_type, *names)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
 
     buy_i, sell_i = g("buy_I_Volume"), g("sell_I_Volume")
     buy_n, sell_n = g("buy_N_Volume"), g("sell_N_Volume")
@@ -93,13 +98,13 @@ def money_flow(client_type: dict, price: float | None) -> dict[str, float | None
     if not (buy_i or sell_i or buy_n or sell_n):
         return {}
 
-    per_buy = buy_i / buy_count * price if buy_count and price else None
-    per_sell = sell_i / sell_count * price if sell_count and price else None
+    per_buy_vol = buy_i / buy_count if buy_count else None
+    per_sell_vol = sell_i / sell_count if sell_count else None
     total = buy_i + buy_n
     return {
-        "per_capita_buy": per_buy,
-        "per_capita_sell": per_sell,
-        "buyer_power": per_buy / per_sell if per_buy and per_sell else None,
+        "per_capita_buy": per_buy_vol * price if per_buy_vol and price else None,
+        "per_capita_sell": per_sell_vol * price if per_sell_vol and price else None,
+        "buyer_power": per_buy_vol / per_sell_vol if per_buy_vol and per_sell_vol else None,
         # Positive: volume moved from institutions to individuals.
         "individual_net_volume": buy_i - sell_i,
         "individual_net_value": (buy_i - sell_i) * price if price else None,
@@ -201,3 +206,38 @@ def _last(series: pd.Series) -> float | None:
         return None
     value = series.iloc[-1]
     return None if value is None or (isinstance(value, float) and math.isnan(value)) else float(value)
+
+
+def fetch_and_analyze(
+    client, symbol: str, days: int = 400, on_warning=None
+) -> tuple[StockAnalysis, pd.DataFrame]:
+    """Resolve ``symbol``, download its data through ``client`` and analyze it.
+
+    Supplementary endpoints (price info, client type) are optional: a halted symbol
+    returns HTTP 500 for them, which must not abort the analysis.
+    """
+    from .client import TsetmcError
+
+    inst = client.resolve(symbol)
+    ins_code = str(inst["insCode"])
+    history = client.daily_history(ins_code, days)
+    if history.empty:
+        raise TsetmcError(f"{symbol}: تاریخچه‌ی قیمت پیدا نشد")
+
+    def optional(fn):
+        try:
+            return fn(ins_code)
+        except TsetmcError as exc:
+            if on_warning:
+                on_warning(str(exc))
+            return {}
+
+    result = analyze(
+        inst.get("lVal18AFC", symbol),
+        inst.get("lVal30", ""),
+        history,
+        optional(client.client_type),
+        optional(client.closing_price_info),
+    )
+    result.ins_code = ins_code
+    return result, history

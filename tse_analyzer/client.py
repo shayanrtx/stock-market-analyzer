@@ -22,6 +22,7 @@ import pandas as pd
 import requests
 
 BASE_URL = "https://cdn.tsetmc.com/api"
+GATEWAY_URL = "https://webgw.tse.ir"
 
 HEADERS = {
     "User-Agent": (
@@ -75,9 +76,11 @@ class TsetmcClient:
 
     # ------------------------------------------------------------------ core
 
+    base_url = BASE_URL
+
     def get(self, path: str) -> Any:
-        """GET a JSON endpoint relative to BASE_URL, with retry and optional cache."""
-        url = f"{BASE_URL}/{path.lstrip('/')}"
+        """GET a JSON endpoint relative to ``base_url``, with retry and optional cache."""
+        url = f"{self.base_url}/{path.lstrip('/')}"
         cached = self._cache_read(url)
         if cached is not None:
             return cached
@@ -94,6 +97,7 @@ class TsetmcClient:
                 elif resp.status_code >= 400:
                     raise TsetmcError(f"HTTP {resp.status_code} for {url}")
                 else:
+                    # 204 / empty body is a valid "no data" answer (e.g. market closed).
                     data = resp.json() if resp.content else {}
                     self._cache_write(url, data)
                     return data
@@ -130,7 +134,7 @@ class TsetmcClient:
             return {"insCode": symbol_or_inscode, "lVal18AFC": symbol_or_inscode}
         results = self.search(symbol_or_inscode)
         if not results:
-            raise TsetmcError(f"symbol not found: {symbol_or_inscode}")
+            raise TsetmcError(f"نماد پیدا نشد: {symbol_or_inscode}")
         norm = _normalize_fa(symbol_or_inscode)
         for item in results:
             if _normalize_fa(item.get("lVal18AFC", "")) == norm:
@@ -175,6 +179,48 @@ class TsetmcClient:
 
     def client_type_all(self) -> list[dict]:
         return self.get("ClientType/GetClientTypeAll").get("clientTypeAllDto") or []
+
+
+class TseGatewayClient(TsetmcClient):
+    """Official tse.ir gateway. Keyed by ISIN; reachable only from Iranian IPs.
+
+    Numeric fields are mostly ``{"value": ..., "state": ...}``; use :func:`field`.
+    """
+
+    base_url = GATEWAY_URL
+
+    def market_date(self) -> list[dict]:
+        return _as_list(self.get("api/v1/PublicData/MarketDate/fa"))
+
+    def market_summary(self) -> dict:
+        data = self.get("InstrumentProvider/api/v1/Instrument/MarketSummary/fa")
+        return data if isinstance(data, dict) else {}
+
+    def market_watch(self, kind: str = "Cash") -> list[dict]:
+        """kind: Cash, Etf, Future, Option, Debt, TradeOption, TALMarket."""
+        data = self.get(f"InstrumentProvider/api/v1/MarketWatch/MarketWatch{kind}/fa")
+        if isinstance(data, dict):
+            return field(data, "Items") or []
+        return _as_list(data)
+
+
+def field(record: dict, *names: str, default: Any = None) -> Any:
+    """Case-insensitive lookup over alternative names, unwrapping ``{"value": x}``."""
+    if not isinstance(record, dict):
+        return default
+    lower = {k.lower(): v for k, v in record.items()}
+    for name in names:
+        if name.lower() in lower:
+            value = lower[name.lower()]
+            if isinstance(value, dict) and "value" in value:
+                value = value["value"]
+            if value is not None:
+                return value
+    return default
+
+
+def _as_list(data: Any) -> list:
+    return data if isinstance(data, list) else []
 
 
 def daily_history_frame(rows: list[dict]) -> pd.DataFrame:

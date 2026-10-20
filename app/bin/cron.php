@@ -16,6 +16,9 @@ if (PHP_SAPI !== 'cli') {
 }
 $root = dirname(__DIR__);
 $verbose = in_array('-v', $argv, true);
+// Heartbeat before anything that can fail (written even by an old PHP), so the health page can tell
+// "cron never reaches the script" apart from "cron runs it with the wrong PHP".
+@file_put_contents($root . '/storage/logs/cron-heartbeat.txt', time() . "\n" . PHP_VERSION . "\n" . PHP_BINARY . "\n");
 if (!$verbose) {
     ini_set('display_errors', '0');
     ini_set('log_errors', '1');

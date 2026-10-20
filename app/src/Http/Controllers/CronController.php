@@ -23,23 +23,44 @@ final class CronController extends Controller
         return Response::json(self::runJobs($this->app));
     }
 
-    /** Shared by the HTTP endpoint and bin/cron.php. @return array<string, mixed> */
-    public static function runJobs(\Sabadgardan\App $app): array
+    /**
+     * Shared by the HTTP endpoint, bin/cron.php and the admin's test run. Each job is isolated: one
+     * failing (e.g. the market API timing out) neither stops the others nor hides that cron ran.
+     * ``$record`` = false for the admin's test run, so it does not pass for a working cron.
+     *
+     * @return array<string, mixed>
+     */
+    public static function runJobs(\Sabadgardan\App $app, bool $record = true): array
     {
         @set_time_limit(120);
-        $result = ['live' => $app->live()->tick(), 'linked' => 0];
-        try {
-            $result['linked'] = $app->notifier()->pollUpdates();
-        } catch (\Throwable $e) {
-            $result['notify_error'] = $e->getMessage();
-        }
+        $result = ['live' => null, 'linked' => 0, 'errors' => []];
+        $jobs = [
+            'live' => static fn () => $app->live()->tick(),
+            'linked' => static fn () => $app->notifier()->pollUpdates(),
+        ];
         if (random_int(1, 60) === 1) {  // occasional housekeeping
-            $app->cache()->prune();
-            $app->audit()->prune();
-            $app->db()->run('DELETE FROM login_attempts WHERE attempted_at < ?', [time() - 86400]);
+            $jobs['housekeeping'] = static function () use ($app): bool {
+                $app->cache()->prune();
+                $app->audit()->prune();
+                $app->db()->run('DELETE FROM login_attempts WHERE attempted_at < ?', [time() - 86400]);
+                return true;
+            };
         }
-        $app->settings()->set(Settings::SYSTEM, 'last_cron_at', date('Y-m-d H:i:s'));
-        $app->settings()->set(Settings::SYSTEM, 'last_cron_runner', (PHP_SAPI === 'cli' ? 'CLI' : 'HTTP') . ' · PHP ' . PHP_VERSION);
+        foreach ($jobs as $name => $job) {
+            try {
+                $result[$name] = $job();
+            } catch (\Throwable $e) {
+                $result['errors'][$name] = $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine();
+                error_log("[cron:$name] $e");
+            }
+        }
+        if ($record) {
+            $s = $app->settings();
+            $s->set(Settings::SYSTEM, 'last_cron_at', date('Y-m-d H:i:s'));
+            $s->set(Settings::SYSTEM, 'last_cron_runner', (PHP_SAPI === 'cli' ? 'CLI' : 'HTTP') . ' · PHP ' . PHP_VERSION);
+            $s->set(Settings::SYSTEM, 'last_cron_error', implode(' | ', array_map(static fn ($k, $v) => "$k: $v",
+                array_keys($result['errors']), $result['errors'])));
+        }
         return $result;
     }
 }

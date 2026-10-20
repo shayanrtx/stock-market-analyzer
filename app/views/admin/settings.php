@@ -39,13 +39,13 @@
   <header><div class="card-title"><h2>زمان‌بند (Cron) برای رصد خودکار</h2></div></header>
   <p class="muted" style="font-size:13px">رصد زنده، صدور سیگنال و اتصال حساب‌ها به پیام‌رسان با اجرای منظم این کار انجام می‌شود. در cPanel یا DirectAdmin بخش «Cron Jobs» یک کار جدید با زمان‌بندی «هر دقیقه» بسازید (هر پنج فیلد Minute، Hour، Day، Month و Weekday برابر <code dir="ltr">*</code>) و در Command یکی از این دو را بگذارید:</p>
   <div class="field"><label>روش ۱ — اجرای مستقیم PHP (پیشنهادی)</label>
-    <input readonly dir="ltr" value="<?= $v->e('/usr/local/bin/php ' . $appRoot . '/bin/cron.php') ?>" onclick="this.select()"></div>
+    <input readonly dir="ltr" value="<?= $v->e(\Sabadgardan\Core\PhpBinary::recommended() . ' ' . $appRoot . '/bin/cron.php') ?>" onclick="this.select()"></div>
   <div class="field"><label>روش ۲ — فراخوانی نشانی (اگر روش ۱ ممکن نبود)</label>
     <input readonly dir="ltr" value="<?= $v->e('wget -q -O /dev/null "' . $cronUrl . '"') ?>" onclick="this.select()"></div>
   <ul class="faint" style="font-size:12px;line-height:2.1;padding-inline-start:18px;margin:0">
     <li>به انتهای دستور <code dir="ltr">&gt;/dev/null 2&gt;&amp;1</code> اضافه نکنید؛ cPanel آن را «Command chaining» می‌داند و رد می‌کند. این اسکریپت در اجرای عادی هیچ خروجی ندارد، پس ایمیلی هم ارسال نمی‌شود و خطاها در <code dir="ltr">storage/logs/cron.log</code> ثبت می‌شوند.</li>
     <li>اگر هاست اجرای «هر دقیقه» را نپذیرفت، کمترین فاصله‌ی مجاز (مثلاً هر ۵ دقیقه: <code dir="ltr">*/5</code> در فیلد Minute) را بگذارید.</li>
     <li>اگر ایمیلی با پیام «PHP … is too old» دریافت کردید، PHP خط فرمان هاست قدیمی‌تر از سایت است؛ به‌جای <code dir="ltr">/usr/local/bin/php</code> مسیر نسخه‌ی ۸ را بگذارید، مثلاً <code dir="ltr">/opt/cpanel/ea-php82/root/usr/bin/php</code> یا <code dir="ltr">/opt/alt/php82/usr/bin/php</code>.</li>
-    <li>چند دقیقه بعد از ساخت، در «سلامت سامانه» ردیف «آخرین اجرای cron» باید سبز شود. نشانی روش ۲ شامل توکن محرمانه است؛ آن را منتشر نکنید.</li>
+    <li>مسیر PHP بالا از روی نسخه‌ی PHP همین سایت پیدا شده است. چند دقیقه بعد از ساخت، وضعیت را در <a href="<?= $v->url('admin/health') ?>#cron">سلامت سامانه</a> ببینید؛ آنجا علت دقیق هر مشکل و دکمه‌ی اجرای آزمایشی هست. نشانی روش ۲ شامل توکن محرمانه است؛ آن را منتشر نکنید.</li>
   </ul>
 </section>

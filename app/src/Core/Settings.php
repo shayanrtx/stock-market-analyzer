@@ -26,6 +26,7 @@ final class Settings
         'telegram_username' => '',
         'last_cron_at' => '',
         'last_cron_runner' => '',          // e.g. "CLI · PHP 8.2.10": shown on the health page
+        'last_cron_error' => '',           // jobs that failed in the last cron run
         'last_updates_offset_bale' => '0',
         'last_updates_offset_telegram' => '0',
     ];

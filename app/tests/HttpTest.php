@@ -193,6 +193,24 @@ final class HttpTest extends TestCase
         $this->assertTrue(array_key_exists('live', json_decode($r->body, true)));
     }
 
+    public function testHealthPageDiagnosesCron(): void
+    {
+        $this->user('root', true);
+        $this->login('root');
+        $before = $this->send('GET', '/admin/health');
+        $this->assertContains('هنوز حتی یک بار به اسکریپت نرسیده', $before->body);
+        $this->assertContains('/bin/cron.php', $before->body, 'shows the command to use');
+
+        $test = $this->send('POST', '/admin/health/cron');
+        $this->assertSame(303, $test->status);
+        $this->assertContains('اجرای آزمایشی', $_SESSION['_flash'][0]['message']);
+        $this->assertSame('', $this->makeApp($this->db)->settings()->system('last_cron_at'), 'a test run is not a working cron');
+
+        \Sabadgardan\Http\Controllers\CronController::runJobs($this->makeApp($this->db));
+        $after = $this->send('GET', '/admin/health');
+        $this->assertContains('Cron درست کار می‌کند', $after->body);
+    }
+
     /** Smoke test: every page renders for an admin with a real portfolio. */
     public function testEveryPageRenders(): void
     {

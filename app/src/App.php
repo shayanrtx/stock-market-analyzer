@@ -229,6 +229,7 @@ final class App
         $r->post('/admin/settings', fn ($q) => $c(C\AdminController::class)->saveSettings($q));
         $r->get('/admin/audit', fn ($q) => $c(C\AdminController::class)->auditLog($q));
         $r->get('/admin/health', fn ($q) => $c(C\AdminController::class)->health($q));
+        $r->post('/admin/health/cron', fn ($q) => $c(C\AdminController::class)->testCron($q));
         return $r;
     }
 

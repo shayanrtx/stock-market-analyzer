@@ -6,7 +6,7 @@ namespace Sabadgardan\Http\Controllers;
 
 use Sabadgardan\Http\Request;
 use Sabadgardan\Http\Response;
-use Sabadgardan\Market\Field;
+use Sabadgardan\Market\MarketData;
 use Sabadgardan\Market\MarketException;
 use Sabadgardan\Market\TsetmcClient;
 
@@ -34,12 +34,9 @@ final class MarketController extends Controller
         }
         try {
             foreach ($market->gateway?->marketWatch('Cash') ?? [] as $item) {
-                $data['watch'][] = [
-                    'symbol' => (string) Field::get($item, 'instrumentName', ''),
-                    'industry' => (string) (Field::get($item, 'industryName', '') ?: 'سایر'),
-                    'change' => (float) Field::get($item, 'closingPricePercent', 0),
-                    'value' => (float) Field::get($item, 'tradeValue', 0),
-                ];
+                if ($row = MarketData::watchRow((array) $item)) {
+                    $data['watch'][] = $row;
+                }
             }
         } catch (MarketException) {
             // tse.ir answers Iranian IPs only; the page works without it.

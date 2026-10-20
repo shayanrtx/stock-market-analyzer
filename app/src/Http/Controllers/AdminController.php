@@ -6,6 +6,7 @@ namespace Sabadgardan\Http\Controllers;
 
 use Sabadgardan\Auth\Auth;
 use Sabadgardan\Core\Migrations;
+use Sabadgardan\Core\PhpBinary;
 use Sabadgardan\Core\Settings;
 use Sabadgardan\Http\Request;
 use Sabadgardan\Http\Response;
@@ -214,13 +215,10 @@ final class AdminController extends Controller
         }
         $checks = [];
         $env = [
-            ['نسخه‌ی PHP', PHP_VERSION, PHP_VERSION_ID >= 80100],
+            ['نسخه‌ی PHP سایت', PHP_VERSION, PHP_VERSION_ID >= 80100],
             ['افزونه‌ی cURL', extension_loaded('curl') ? 'فعال' : 'غیرفعال', extension_loaded('curl')],
             ['افزونه‌ی GD (تصویر سیگنال)', function_exists('imagettftext') ? 'فعال' : 'غیرفعال', function_exists('imagettftext')],
             ['پوشه‌ی storage قابل نوشتن', is_writable($this->app->root . '/storage') ? 'بله' : 'خیر', is_writable($this->app->root . '/storage')],
-            ['آخرین اجرای cron', ($last = $this->app->settings()->system('last_cron_at'))
-                ? $last . ' (' . $this->app->settings()->system('last_cron_runner') . ')' : 'هرگز',
-                $last !== '' && time() - strtotime($last) < 600],
         ];
         $market = $this->app->uncachedMarket();
         $probe = function (string $name, callable $fn, array $fields) use (&$checks): void {
@@ -229,9 +227,16 @@ final class AdminController extends Controller
                 $rows = $fn();
                 $first = is_array($rows) && array_is_list($rows) ? ($rows[0] ?? []) : $rows;
                 $keys = array_change_key_case(is_array($first) ? $first : [], CASE_LOWER);
-                $missing = array_values(array_filter($fields, static fn ($f) => !array_key_exists(strtolower($f), $keys)));
-                $checks[] = [$name, $missing ? 'فیلد ناموجود: ' . implode('، ', $missing) : 'سالم', !$missing,
-                             round((microtime(true) - $start) * 1000)];
+                // A field may have alternative names (e.g. buy_CountI today, buy_I_Count in the history).
+                $missing = array_values(array_filter($fields, static fn ($f) => !array_filter((array) $f,
+                    static fn ($alt) => array_key_exists(strtolower($alt), $keys))));
+                $result = 'سالم';
+                if ($missing) {
+                    $result = 'فیلد ناموجود: ' . implode('، ', array_map(static fn ($f) => implode(' / ', (array) $f), $missing))
+                        . ($keys ? ' — فیلدهای موجود: ' . implode('، ', array_slice(array_keys(is_array($first) ? $first : []), 0, 40))
+                                 : ' — پاسخ خالی بود');
+                }
+                $checks[] = [$name, $result, !$missing, round((microtime(true) - $start) * 1000)];
             } catch (\Throwable $e) {
                 $checks[] = [$name, $e->getMessage(), false, round((microtime(true) - $start) * 1000)];
             }
@@ -248,7 +253,7 @@ final class AdminController extends Controller
                 ['dEven', 'priceFirst', 'priceMax', 'priceMin', 'pClosing', 'pDrCotVal', 'priceYesterday', 'qTotTran5J', 'qTotCap']);
             $probe('قیمت لحظه‌ای', fn () => $cdn->closingPriceInfo($code), ['pClosing', 'pDrCotVal', 'priceYesterday', 'instrumentState']);
             $probe('حقیقی/حقوقی امروز', fn () => $cdn->clientType($code), ['buy_I_Volume', 'buy_CountI', 'sell_I_Volume', 'sell_CountI']);
-            $probe('حقیقی/حقوقی تاریخی', fn () => $cdn->clientTypeHistory($code), ['recDate', 'buy_I_Volume', 'buy_CountI']);
+            $probe('حقیقی/حقوقی تاریخی', fn () => $cdn->clientTypeHistory($code), ['recDate', 'buy_I_Volume', ['buy_CountI', 'buy_I_Count']]);
             $probe('اطلاعات نماد (EPS)', fn () => $cdn->instrumentInfo($code), ['lVal18AFC', 'sector', 'eps', 'zTitad']);
             $probe('تابلوی سفارش', fn () => $cdn->bestLimits($code), ['number', 'pMeDem', 'qTitMeDem', 'pMeOf', 'qTitMeOf']);
             $probe('دامنه‌ی نوسان', fn () => \Sabadgardan\Market\Field::list($cdn->get("MarketData/GetStaticThreshold/$code/" . date('Ymd')), 'staticThreshold'),
@@ -258,9 +263,65 @@ final class AdminController extends Controller
         $probe('تاریخچه‌ی شاخص کل', fn () => \Sabadgardan\Market\Field::list($cdn->get('Index/GetIndexB2History/' . TsetmcClient::TEDPIX), 'indexB2'),
             ['dEven', 'xNivInuClMresIbs']);
         if ($market->gateway) {
-            $probe('دیده‌بان رسمی (tse.ir)', fn () => $market->gateway->marketWatch('Cash'), ['instrumentName', 'closingPricePercent', 'tradeValue']);
+            $probe('دیده‌بان رسمی (tse.ir)', fn () => $market->gateway->marketWatch('Cash'),
+                ['instrumentName', ['closingPricePercent', 'closingPriceChangePercent', 'closingPrice'], 'yesterdayPrice', 'tradeValue']);
         }
         return $this->view($q, 'admin/health', ['title' => 'سلامت سامانه', 'nav' => 'admin', 'env' => $env, 'checks' => $checks,
-            'migration' => (new Migrations($this->app->db()))->current()]);
+            'migration' => (new Migrations($this->app->db()))->current(), 'cron' => $this->cronDiagnosis()]);
+    }
+
+    /**
+     * Where cron stands, from three independent traces: the heartbeat bin/cron.php writes first thing
+     * (with the PHP that ran it), the record of the last completed run, and storage/logs/cron.log.
+     *
+     * @return array<string, mixed>
+     */
+    private function cronDiagnosis(): array
+    {
+        $s = $this->app->settings();
+        $logs = $this->app->root . '/storage/logs';
+        $beat = @file($logs . '/cron-heartbeat.txt', FILE_IGNORE_NEW_LINES) ?: [];
+        $beatAt = isset($beat[0]) ? (int) $beat[0] : 0;
+        $beatPhp = $beat[1] ?? '';
+        $last = $s->system('last_cron_at');
+        $lastTs = $last !== '' ? (int) strtotime($last) : 0;
+        $log = @file($logs . '/cron.log', FILE_IGNORE_NEW_LINES) ?: [];
+        $recent = static fn (int $ts) => $ts > 0 && time() - $ts < 600;
+
+        $status = match (true) {
+            $recent($lastTs) && $s->system('last_cron_error') === '' => 'ok',
+            $recent($lastTs) => 'job_errors',
+            $recent($beatAt) && $beatPhp !== '' && version_compare($beatPhp, '8.1', '<') => 'old_php',
+            $recent($beatAt) => 'crashes',
+            $beatAt > 0 => 'stopped',
+            default => 'never',
+        };
+        return [
+            'status' => $status,
+            'last' => $last, 'runner' => $s->system('last_cron_runner'), 'error' => $s->system('last_cron_error'),
+            'beat_at' => $beatAt ? date('Y-m-d H:i:s', $beatAt) : '', 'beat_php' => $beatPhp, 'beat_binary' => $beat[2] ?? '',
+            'command' => PhpBinary::recommended() . ' ' . $this->app->root . '/bin/cron.php',
+            'log' => array_slice($log, -15),
+        ];
+    }
+
+    /** Runs the cron jobs once from the browser and shows what happened (not recorded as a cron run). */
+    public function testCron(Request $q): Response
+    {
+        if ($r = $this->guard($q)) {
+            return $r;
+        }
+        $result = CronController::runJobs($this->app, false);
+        if ($result['errors']) {
+            foreach ($result['errors'] as $job => $error) {
+                $this->flash('error', "اجرای آزمایشی — $job: $error");
+            }
+        } else {
+            $live = $result['live'] ?? [];
+            $this->flash('success', sprintf('اجرای آزمایشی بدون خطا انجام شد. فاز بازار: %s · بینش‌های جدید: %d · حساب‌های متصل‌شده: %d',
+                \Sabadgardan\Live\MarketClock::LABELS[$live['phase'] ?? 'closed'] ?? '-', (int) ($live['insights'] ?? 0),
+                (int) $result['linked']));
+        }
+        return $this->redirect($q, '/admin/health');
     }
 }

@@ -10,6 +10,9 @@ use Sabadgardan\Market\Field;
  * Individual (حقیقی) vs institutional (حقوقی) flow from a ``clientType`` record.
  * Buyer power (قدرت خریدار) = per-capita individual buy volume / per-capita sell volume;
  * above 1 individual buyers are bigger than sellers ("smart money" entering).
+ *
+ * Today's record (GetClientType) names the counts ``buy_CountI``; the daily history
+ * (GetClientTypeHistory) names them ``buy_I_Count``. Both are accepted.
  */
 final class MoneyFlow
 {
@@ -20,8 +23,8 @@ final class MoneyFlow
         $sellI = Field::float($record, 'sell_I_Volume', 0.0);
         $buyN = Field::float($record, 'buy_N_Volume', 0.0);
         $sellN = Field::float($record, 'sell_N_Volume', 0.0);
-        $buyCount = Field::float($record, 'buy_CountI', 0.0);
-        $sellCount = Field::float($record, 'sell_CountI', 0.0);
+        $buyCount = Field::float($record, ['buy_CountI', 'buy_I_Count'], 0.0);
+        $sellCount = Field::float($record, ['sell_CountI', 'sell_I_Count'], 0.0);
         if (!$buyI && !$sellI && !$buyN && !$sellN) {
             return [];
         }

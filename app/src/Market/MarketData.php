@@ -143,6 +143,32 @@ final class MarketData
         return $out;
     }
 
+    /**
+     * One row of the official market watch (tse.ir). The change is taken from a percent field when
+     * present, otherwise computed from the closing and reference prices, both documented fields.
+     *
+     * @param array<string, mixed> $item
+     * @return array{symbol: string, industry: string, change: float, value: float}|null
+     */
+    public static function watchRow(array $item): ?array
+    {
+        $symbol = trim((string) Field::get($item, ['instrumentName', 'instrument_Name', 'symbol'], ''));
+        if ($symbol === '') {
+            return null;
+        }
+        $change = Field::float($item, ['closingPricePercent', 'closingPriceChangePercent', 'closingPriceVarPercent']);
+        if ($change === null) {
+            $close = Field::float($item, ['closingPrice', 'closePrice']);
+            $ref = Field::float($item, ['yesterdayPrice', 'priceYesterday', 'referencePrice']);
+            if (!$close || !$ref) {
+                return null;
+            }
+            $change = ($close / $ref - 1) * 100;
+        }
+        return ['symbol' => $symbol, 'industry' => trim((string) Field::get($item, ['industryName', 'industry_Name'], '')) ?: 'سایر',
+                'change' => $change, 'value' => (float) Field::float($item, ['tradeValue', 'tradevalue'], 0.0)];
+    }
+
     /** @return array<string, float> TEDPIX closes by date, or [] when unavailable */
     public function benchmark(): array
     {

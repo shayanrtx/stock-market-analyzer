@@ -444,8 +444,8 @@ final class DemoTransport implements Transport
         foreach (array_slice(array_reverse($this->finished($code)), 0, 300) as $r) {
             $out[] = ['recDate' => (int) str_replace('-', '', $r['date']), 'insCode' => $code,
                       'buy_I_Volume' => $r['buy_i'], 'sell_I_Volume' => $r['sell_i'], 'buy_N_Volume' => $r['buy_n'],
-                      'sell_N_Volume' => $r['sell_n'], 'buy_CountI' => $r['count_bi'], 'sell_CountI' => $r['count_si'],
-                      'buy_CountN' => 3, 'sell_CountN' => 3];
+                      'sell_N_Volume' => $r['sell_n'], 'buy_I_Count' => $r['count_bi'], 'sell_I_Count' => $r['count_si'],
+                      'buy_N_Count' => 3, 'sell_N_Count' => 3];  // the history endpoint's naming, unlike today's record
         }
         return $out;
     }
@@ -575,8 +575,9 @@ final class DemoTransport implements Transport
                 continue;
             }
             $c = $this->current($code);
-            $out[] = ['instrumentName' => $d[0], 'industryName' => $d[2], 'closingPricePercent' => round(($c['close'] / $c['yesterday'] - 1) * 100, 2),
-                      'tradeValue' => $c['value']];
+            // Only the documented fields (ENDPOINTS.md): the change percent is derived from the prices.
+            $out[] = ['instrumentId' => $d[3], 'instrumentName' => $d[0], 'industryName' => $d[2], 'closingPrice' => $c['close'],
+                      'yesterdayPrice' => $c['yesterday'], 'lastPrice' => $c['last'], 'tradeValue' => $c['value']];
         }
         $t = $this->today();
         $share = $t['final'] ? 1.0 : $t['progress'];
@@ -585,7 +586,9 @@ final class DemoTransport implements Transport
         foreach (self::WATCH_EXTRA as $i => [$name, $industry]) {
             $state = self::seed($name . ':' . MarketClock::day($this->now()));
             $chg = max(-5.0, min(5.0, ($mt * 1.1 + 0.018 * self::normal($state)) * 100 * min(1.0, 0.35 + 0.65 * $share)));
-            $out[] = ['instrumentName' => $name, 'industryName' => $industry, 'closingPricePercent' => round($chg, 2),
+            $yesterday = round(2000 + 18000 * self::uniform($state));
+            $out[] = ['instrumentId' => 'IRO1DEMO' . sprintf('%04d', $i), 'instrumentName' => $name, 'industryName' => $industry,
+                      'closingPrice' => round($yesterday * (1 + $chg / 100)), 'yesterdayPrice' => $yesterday,
                       'tradeValue' => round(4e10 * exp(0.9 * self::normal($state)) * max($share, 0.02))];
         }
         return $out;

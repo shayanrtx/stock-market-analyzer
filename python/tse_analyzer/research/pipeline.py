@@ -123,8 +123,8 @@ def _run(folder: Path, top: int, db: str, drivers_dir: str, workers: int, skip_u
     _step(5, "شبیه‌سازی قانون خرید سایت")
     t0 = time.time()
     sig = signals.run(universe, index, step=step, workers=workers, progress=_progress("شبیه‌سازی", len(universe)))
-    log.info("%d معامله (قانون سایت) و %d (قانون قبلی) در %.0f ثانیه", len(sig.trades), len(sig.plain),
-             time.time() - t0)
+    log.info("%d معامله (قانون سایت)، %d (قانون قبلی) و %d (بدون فیلتر) در %.0f ثانیه", len(sig.trades), len(sig.plain),
+             len(sig.unfiltered), time.time() - t0)
 
     _step(6, "مطالعات سطح بازار")
     studies = {
@@ -147,7 +147,7 @@ def _run(folder: Path, top: int, db: str, drivers_dir: str, workers: int, skip_u
         "generated_at": datetime.now().isoformat(timespec="seconds"), "symbols": len(universe),
         "from": first.strftime("%Y-%m-%d"), "to": last.strftime("%Y-%m-%d"),
         "calibration": cal.to_json(), "signals": {"site": sig.site, "previous_rule": sig.baseline,
-                                                 "by_regime": sig.by_regime},
+                                                 "no_filter": sig.no_filter, "by_regime": sig.by_regime},
         "studies": studies}, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
     log.info("\n%s", summary)
     log.info("پایان در %.0f دقیقه. گزارش کامل: %s", (time.time() - started) / 60, (folder / "report.txt").resolve())
@@ -278,13 +278,20 @@ def accuracy_summary(cal: calibrate.Calibration, sig: signals.SignalReport, stud
     lines.append("")
 
     # 3. signals
-    s, old = sig.site, sig.baseline
-    lines.append(f"۳) سیگنال خرید با قانون فعلی سایت: {_signal_verdict(s)}")
+    s, old, free = sig.site, sig.baseline, sig.no_filter
+    lines.append(f"۳) سیگنال خرید با قانون فعلی سایت: {_signal_verdict(s, free)}")
     if s.get("trades"):
         ci = s["win_rate_ci"]
         lines.append(f"   • {s['trades']} معامله؛ سودده {_p(s['win_rate'])} (بازه‌ی ۹۵٪: {_p(ci[0])} تا {_p(ci[1])})، "
                      f"رسیدن به هدف {_p(s['target_rate'])}، حد ضرر {_p(s['stop_rate'])}؛ "
                      f"امید ریاضی {_pct(s['expectancy_pct'])} در هر معامله، میانگین {s['avg_days']:.0f} جلسه.")
+    if s.get("excess_pct") is not None:
+        lines.append(f"   • شاخص کل در همان روزها {_pct(s['index_pct'])}؛ بازده مازاد بر شاخص {_pct(s['excess_pct'])} "
+                     f"در هر معامله (t={_n(s['excess_t'], 1)} روی {s['excess_months']} ماه).")
+    if free.get("trades"):
+        lines.append(f"   • بدون فیلتر امتیاز و احتمال: {free['trades']} معامله، سودده {_p(free['win_rate'])}، "
+                     f"امید ریاضی {_pct(free['expectancy_pct'])}"
+                     + (f"، مازاد بر شاخص {_pct(free['excess_pct'])}" if free.get("excess_pct") is not None else "") + ".")
     if old.get("trades"):
         lines.append(f"   • قانون ساده‌ی قبلی: {old['trades']} معامله، سودده {_p(old['win_rate'])}، "
                      f"امید ریاضی {_pct(old['expectancy_pct'])}.")
@@ -351,12 +358,27 @@ def _probability_verdict(pc: dict) -> str:
     return "بهتر از «همیشه میانگین بازار» نیست؛ عدد آن را با احتیاط بخوانید"
 
 
-def _signal_verdict(s: dict) -> str:
+def _signal_verdict(s: dict, free: dict | None = None) -> str:
+    """Judged against TEDPIX over the same sessions (inflation lifts almost every long trade) and
+    against taking every valid plan without the score/probability filter."""
     if not s.get("trades"):
         return "معامله‌ای پیدا نشد"
     if s["trades"] < 30:
         return "تعداد معاملات برای قضاوت کم است"
-    return "سودده بوده است" if s["expectancy_pct"] > 0 else "سودده نبوده است"
+    e, t = s.get("excess_pct"), s.get("excess_t")
+    if e is None:
+        return ("امید ریاضی مثبت بوده، ولی بدون شاخص کل نمی‌شود گفت از خرید بازار بهتر بوده"
+                if s["expectancy_pct"] > 0 else "سودده نبوده است")
+    if e > 0 and t is not None and t >= 2:
+        verdict = "از شاخص کل در همان روزها بهتر بوده و این برتری معنادار است"
+    elif e > 0:
+        verdict = "کمی بهتر از شاخص کل در همان روزها، ولی از نظر آماری قطعی نیست"
+    else:
+        verdict = "از خرید شاخص کل در همان روزها بهتر نبوده" + ("، هرچند سود داشته" if s["expectancy_pct"] > 0 else "")
+    if free and free.get("trades") and free.get("excess_pct") is not None:
+        verdict += ("؛ فیلتر امتیاز و احتمال کمک کرده" if e > free["excess_pct"]
+                    else "؛ فیلتر امتیاز و احتمال کمکی نکرده")
+    return verdict
 
 
 def studies_text(studies: dict) -> str:
@@ -395,11 +417,12 @@ def _write_trades(path: Path, trades: list) -> None:
     with path.open("w", newline="", encoding="utf-8-sig") as fh:
         w = csv.writer(fh)
         w.writerow(["date", "symbol", "score", "stop_pct", "target_pct", "reward_risk", "odds_win", "regime", "outcome",
-                    "return_pct", "days"])
+                    "return_pct", "days", "index_pct"])
         for t in trades:
             w.writerow([t.date.strftime("%Y-%m-%d"), t.symbol, f"{t.score:.1f}", f"{t.stop_pct:.2f}", f"{t.target_pct:.2f}",
                         f"{t.reward_risk:.2f}", f"{t.odds_win:.3f}", t.regime or "", t.outcome,
-                        "" if t.return_pct is None else f"{t.return_pct:.2f}", t.days])
+                        "" if t.return_pct is None else f"{t.return_pct:.2f}", t.days,
+                        "" if t.index_pct is None else f"{t.index_pct:.2f}"])
 
 
 def _setup_logging(path: Path) -> None:

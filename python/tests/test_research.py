@@ -243,8 +243,41 @@ def test_signal_simulation(lab):
         if t.outcome == "target":
             assert t.return_pct == pytest.approx(t.target_pct)
     assert rep.plain and len(rep.plain) >= len(rep.trades) - 2  # the site rule only adds conditions
+    assert len(rep.unfiltered) >= len(rep.plain) - 2 and rep.no_filter["trades"] > 0
+    closed = [t for t in rep.trades if t.outcome != "open"]
+    assert all(t.index_pct is not None for t in closed)  # every closed trade is set against TEDPIX
+    assert s["excess_pct"] == pytest.approx(np.mean([t.return_pct - t.index_pct for t in closed]))
     text = signals.report_text(rep)
     assert "سودده" in text and "قانون فعلی سایت" in text and "قانون ساده‌ی قبلی" in text
+    assert "بدون فیلتر" in text and "بازده مازاد" in text
+
+
+def test_excess_over_the_index_by_hand():
+    idx = pd.Series([100.0, 110.0, 121.0], index=pd.to_datetime(["2025-01-01", "2025-02-03", "2025-03-03"]))
+    assert signals.index_return(idx, pd.Timestamp("2025-01-01"), pd.Timestamp("2025-02-10")) == pytest.approx(10.0)
+    assert signals.index_return(idx, pd.Timestamp("2025-02-03"), pd.Timestamp("2025-01-01")) is None
+    assert signals.index_return(None, idx.index[0], idx.index[1]) is None
+
+    def trade(day, ret, index_pct):
+        return signals.Trade("1", "x", pd.Timestamp(day), 70, 5, 10, 2, 0.5, "bull", "expired", ret, 20, index_pct)
+    trades = [trade("2025-01-05", 12, 10), trade("2025-01-20", 6, 10),   # January: +2, -4 → -1
+              trade("2025-02-05", 5, 1), trade("2025-03-05", 3, 0), trade("2025-04-05", 1, 2)]
+    e = signals.excess_stats(trades)
+    assert e["excess_trades"] == 5 and e["excess_months"] == 4
+    assert e["excess_pct"] == pytest.approx((2 - 4 + 4 + 3 - 1) / 5)
+    assert e["index_pct"] == pytest.approx(23 / 5)
+    assert signals.excess_stats([trade("2025-01-05", 1, None)])["excess_pct"] is None
+
+
+def test_signal_verdict_is_judged_against_the_index():
+    from tse_analyzer.research.pipeline import _signal_verdict
+    base = {"trades": 300, "expectancy_pct": 5.0}
+    assert "بهتر نبوده، هرچند سود داشته" in _signal_verdict(dict(base, excess_pct=-0.5, excess_t=-0.4))
+    assert "قطعی نیست" in _signal_verdict(dict(base, excess_pct=0.8, excess_t=1.1))
+    assert "معنادار" in _signal_verdict(dict(base, excess_pct=2.0, excess_t=2.6))
+    assert "کمک کرده" in _signal_verdict(dict(base, excess_pct=2.0, excess_t=2.6), {"trades": 900, "excess_pct": 0.3})
+    assert "کمکی نکرده" in _signal_verdict(dict(base, excess_pct=0.2, excess_t=0.3), {"trades": 900, "excess_pct": 0.3})
+    assert "کم است" in _signal_verdict({"trades": 10, "expectancy_pct": 5.0})
 
 
 def test_site_rule_matches_the_php_signal_engine():

@@ -7,13 +7,19 @@ Every ``step`` sessions of each symbol, with data up to that close only:
   reward/risk ≥ 1.5
 - historical odds of the exact plan (:func:`potential.trade_odds`, 42 sessions)
 
-Two rules are compared on the same candidates:
+Three rules are compared on the same candidates:
 
 - **site rule** (what the app does today): growth-potential score ≥ 60 and win rate ≥ 45%,
   raised to 70 and 55% when the market regime is bearish (``MarketRegime`` in the PHP app,
   rebuilt day by day from TEDPIX), win rate above the stop rate, positive expectancy, and the
   low end of the win rate's 95% interval above the plan's break-even 1 / (1 + reward/risk);
-- **plain rule** (the rule before those additions): score ≥ 60 and win rate ≥ 45% everywhere.
+- **plain rule** (the rule before those additions): score ≥ 60 and win rate ≥ 45% everywhere;
+- **no filter**: every valid plan, whatever its score and odds — what the filter adds.
+
+A positive average return proves little in a market that inflation lifts by tens of percent a
+year: each trade is also set against TEDPIX over the same sessions. The excess return is
+averaged per entry month (trades of one month share the market's path) and its t-statistic
+uses Newey-West errors, since a 42-session holding spans two months.
 
 The live trigger (an intraday strength insight) cannot be replayed from daily data, so this
 measures the structural filter that every production signal must pass. A signal is taken at
@@ -34,7 +40,7 @@ import pandas as pd
 from .. import indicators as ind
 from ..potential import trade_odds
 from ..regime import production_states, production_thresholds
-from ..stats import wilson
+from ..stats import newey_west, wilson
 from .common import MIN_HISTORY, SymbolData, score_at
 
 BUY_MIN_SCORE = 60.0
@@ -59,6 +65,11 @@ class Trade:
     outcome: str = "open"
     return_pct: float | None = None
     days: int = 0
+    index_pct: float | None = None  # TEDPIX over the same sessions
+
+    @property
+    def excess_pct(self) -> float | None:
+        return None if self.return_pct is None or self.index_pct is None else self.return_pct - self.index_pct
 
     @property
     def r_multiple(self) -> float | None:
@@ -69,8 +80,10 @@ class Trade:
 class SignalReport:
     trades: list[Trade]  # site rule
     plain: list[Trade]  # rule without the regime and confidence additions
+    unfiltered: list[Trade] = dc_field(default_factory=list)  # every valid plan
     site: dict = dc_field(default_factory=dict)
     baseline: dict = dc_field(default_factory=dict)
+    no_filter: dict = dc_field(default_factory=dict)
     by_regime: dict = dc_field(default_factory=dict)  # site rule, per regime on the signal day
     universe: int = 0
     step: int = STEP
@@ -105,10 +118,19 @@ def candidate_at(sym: SymbolData, at: pd.Timestamp, index: pd.Series | None = No
             "expectancy_pct": float(odds["expectancy_pct"]), "win_low": odds.get("win_low")}
 
 
-def passes(c: dict | None, state: str | None, site_rule: bool = True) -> bool:
-    """Does a candidate plan clear the bars (site rule = ``SignalEngine::acceptable`` in PHP)?"""
+SITE, PLAIN, NO_FILTER = "site", "plain", "none"
+
+
+def passes(c: dict | None, state: str | None, site_rule: bool | str = True) -> bool:
+    """Does a candidate plan clear the bars (site rule = ``SignalEngine::acceptable`` in PHP)?
+
+    ``site_rule``: True / ``SITE``, False / ``PLAIN``, or ``NO_FILTER`` (any valid plan).
+    """
     if c is None:
         return False
+    if site_rule == NO_FILTER:
+        return True
+    site_rule = site_rule in (True, SITE)
     min_score, min_prob = production_thresholds(state) if site_rule else (BUY_MIN_SCORE, MIN_PROBABILITY)
     ok = (c["score"] >= min_score and c["expectancy_pct"] > 0 and c["odds_win"] >= min_prob
           and c["odds_win"] > c["odds_loss"])
@@ -142,9 +164,18 @@ def follow(adjusted: pd.DataFrame, i: int, stop_pct: float, target_pct: float, h
     return ("expired" if days >= horizon else "open"), ret, days
 
 
+def index_return(index: pd.Series | None, start: pd.Timestamp, end: pd.Timestamp) -> float | None:
+    """TEDPIX change from the close of ``start`` to the close of ``end`` (last known values), percent."""
+    if index is None or not len(index) or end <= start:
+        return None
+    a, b = index.asof(start), index.asof(end)
+    return None if pd.isna(a) or pd.isna(b) or a <= 0 else (b / a - 1) * 100
+
+
 def simulate_symbol(sym: SymbolData, index: pd.Series | None = None, states: pd.Series | None = None,
-                    step: int = STEP, horizon: int = HORIZON, min_history: int = MIN_HISTORY) -> tuple[list[Trade], list[Trade]]:
-    """(site-rule trades, plain-rule trades) of one symbol; the expensive plan is computed once per date."""
+                    step: int = STEP, horizon: int = HORIZON,
+                    min_history: int = MIN_HISTORY) -> tuple[list[Trade], list[Trade], list[Trade]]:
+    """(site-rule, plain-rule, no-filter) trades of one symbol; the expensive plan is computed once per date."""
     adj = sym.adjusted
     close = adj["close"]
     # Cheap pre-filter on the fully adjusted series (ratios are unchanged by later adjustments);
@@ -152,7 +183,9 @@ def simulate_symbol(sym: SymbolData, index: pd.Series | None = None, states: pd.
     above = (close > ind.sma(close, 200)).to_numpy()
     cache: dict[int, dict | None] = {}
     out = []
-    for site_rule in (True, False):
+    if index is not None:
+        index = index.sort_index()
+    for rule in (SITE, PLAIN, NO_FILTER):
         trades = []
         i = max(min_history - 1, 0)
         while i < len(adj) - 1:
@@ -164,18 +197,19 @@ def simulate_symbol(sym: SymbolData, index: pd.Series | None = None, states: pd.
             if i not in cache:
                 cache[i] = candidate_at(sym, at, index, horizon)
             c = cache[i]
-            if not passes(c, state, site_rule):
+            if not passes(c, state, rule):
                 i += step
                 continue
             outcome, ret, days = follow(adj, i, c["stop_pct"], c["target_pct"], horizon)
             trades.append(Trade(sym.ins_code, sym.symbol, at, c["score"], c["stop_pct"], c["target_pct"],
-                                c["reward_risk"], c["odds_win"], state, outcome, ret, days))
+                                c["reward_risk"], c["odds_win"], state, outcome, ret, days,
+                                index_return(index, at, adj.index[i + days]) if days else None))
             i += max(step, days + 1)  # one position per symbol at a time
         out.append(trades)
-    return out[0], out[1]
+    return out[0], out[1], out[2]
 
 
-def _simulate(args) -> tuple[list[Trade], list[Trade]]:
+def _simulate(args) -> tuple[list[Trade], list[Trade], list[Trade]]:
     return simulate_symbol(*args)
 
 
@@ -191,6 +225,7 @@ def summarize(trades: list[Trade]) -> dict:
     stops = sum(t.outcome == "stop" for t in closed)
     win_ci, target_ci = wilson(len(wins), n), wilson(targets, n)
     r = [t.r_multiple for t in closed if t.r_multiple is not None]
+    excess = excess_stats(closed)
     return {
         "trades": n,
         "open": len(trades) - n,
@@ -208,7 +243,21 @@ def summarize(trades: list[Trade]) -> dict:
                                 + len(losses) / n * (losses.mean() if len(losses) else 0)),
         "expectancy_r": float(np.mean(r)) if r else None,
         "avg_days": float(np.mean([t.days for t in closed])),
+        **excess,
     }
+
+
+def excess_stats(closed: list[Trade]) -> dict:
+    """Return over TEDPIX in the same sessions: mean per trade, and a t-statistic on entry-month
+    averages with Newey-West errors (lags 2: holdings of up to 42 sessions overlap the next month)."""
+    pairs = [(t.date, t.excess_pct, t.index_pct) for t in closed if t.excess_pct is not None]
+    if not pairs:
+        return {"excess_trades": 0, "index_pct": None, "excess_pct": None, "excess_t": None, "excess_months": 0}
+    frame = pd.DataFrame(pairs, columns=["date", "excess", "index"])
+    monthly = frame.groupby(frame["date"].dt.to_period("M"))["excess"].mean()
+    nw = newey_west(monthly.to_numpy(dtype=float), 2)
+    return {"excess_trades": len(frame), "index_pct": float(frame["index"].mean()),
+            "excess_pct": float(frame["excess"].mean()), "excess_t": nw["t"], "excess_months": len(monthly)}
 
 
 def run(universe: list[SymbolData], index: pd.Series | None = None, step: int = STEP,
@@ -227,10 +276,10 @@ def run(universe: list[SymbolData], index: pd.Series | None = None, step: int = 
             results.append(_simulate(a))
             if progress:
                 progress(k, len(args))
-    site = sorted((t for r in results for t in r[0]), key=lambda t: (t.date, t.symbol))
-    plain = sorted((t for r in results for t in r[1]), key=lambda t: (t.date, t.symbol))
+    site, plain, free = (sorted((t for r in results for t in r[k]), key=lambda t: (t.date, t.symbol)) for k in range(3))
     by_regime = {state: summarize([t for t in site if t.regime == state]) for state in ("bull", "neutral", "bear")}
-    return SignalReport(site, plain, summarize(site), summarize(plain), by_regime, len(universe), step, horizon)
+    return SignalReport(site, plain, free, site=summarize(site), baseline=summarize(plain), no_filter=summarize(free),
+                        by_regime=by_regime, universe=len(universe), step=step, horizon=horizon)
 
 
 def state_at(states: pd.Series | None, at: pd.Timestamp) -> str | None:
@@ -263,10 +312,13 @@ def report_text(r: SignalReport) -> str:
             f"امید ریاضی {s['expectancy_pct']:+.2f}٪ برای هر معامله"
             + (f" ({s['expectancy_r']:+.2f}R)" if s.get("expectancy_r") is not None else "")
             + f"   میانگین نگهداری {s['avg_days']:.0f} جلسه",
-        ]
+        ] + ([f"  شاخص کل در همان روزها {s['index_pct']:+.2f}٪ → بازده مازاد {s['excess_pct']:+.2f}٪ برای هر معامله"
+              + (f" (t={s['excess_t']:+.1f} روی {s['excess_months']} ماه)" if s.get("excess_t") is not None else "")]
+             if s.get("excess_pct") is not None else [])
 
     lines += block("قانون فعلی سایت (سخت‌گیرتر در بازار نزولی و با بازه‌ی اطمینان)", r.site)
     lines += [""] + block("قانون ساده‌ی قبلی (بدون این دو)", r.baseline)
+    lines += [""] + block("بدون فیلتر (هر برنامه‌ی معتبر، بدون شرط امتیاز و احتمال)", r.no_filter)
     labels = {"bull": "بازار صعودی", "neutral": "بازار خنثی", "bear": "بازار نزولی"}
     regime_lines = [f"  {labels[k]}: {s['trades']} معامله، سودده {s['win_rate'] * 100:.0f}٪، "
                     f"امید ریاضی {s['expectancy_pct']:+.2f}٪" for k, s in r.by_regime.items() if s.get("trades")]

@@ -56,7 +56,10 @@ final class DemoTransport implements Transport
         ['کمند', 'صندوق سرمایه‌گذاری درآمد ثابت کمند', 'صندوق سرمایه گذاری قابل معامله', 'IRT3KMDF0001', 'فرابورس', 24600, 0.02, 0.0012, 0.29, 0.0, 0.0, 500, [], 0, 0.0, 'صندوق سرمايه گذاري با درآمد ثابت'],
         ['اهرم', 'صندوق اهرمی کاریزما', 'صندوق سرمایه گذاری قابل معامله', 'IRT1AHRM0001', 'بورس', 15700, 2.0, 0.010, 0.30, 0.0, 0.0, 800, [], 0, 0.0, 'صندوق هاي سرمايه گذاري اهرمي'],
         ['عیار', 'صندوق س. پشتوانه طلای مفید', 'صندوق سرمایه گذاری قابل معامله', 'IRT1AYAR0001', 'بورس', 41800, 0.05, 0.013, 0.38, 0.0, 0.0, 2000, [], 0, 0.0, 'صندوق سرمايه گذاري كالايي'],
-        ['اخزا۴۱۲', 'اسناد خزانه اسلامی۰۴۱۲', 'اوراق مشارکت و صکوک', 'IRB3TR041229', 'فرابورس', 912000, 0.0, 0.0006, 0.27, 0.0, 0.0, 10, [], 0, 0.0, 'اسناد خزانه اسلامي'],
+        // Treasury bills: the end price is set from the target yield (index 8) and the maturity in the name.
+        ['اخزا5011', 'اسناد خزانه-م5بودجه03-051123', 'اوراق مشارکت و صکوک', 'IRB3TR051123', 'فرابورس', 0, 0.0, 0.0006, 0.288, 0.0, 0.0, 10, [], 0, 0.0, 'اسناد خزانه اسلامي'],
+        ['اخزا3014', 'اسناد خزانه-م1بودجه03-060118', 'اوراق مشارکت و صکوک', 'IRB3TR060118', 'فرابورس', 0, 0.0, 0.0006, 0.297, 0.0, 0.0, 10, [], 0, 0.0, 'اسناد خزانه اسلامي'],
+        ['اخزا4024', 'اسناد خزانه-م2بودجه04-070614', 'اوراق مشارکت و صکوک', 'IRB3TR070614', 'فرابورس', 0, 0.0, 0.0006, 0.305, 0.0, 0.0, 10, [], 0, 0.0, 'اسناد خزانه اسلامي'],
     ];
 
     /** Extra names that appear only in the market watch (breadth, sector map, movers). */
@@ -122,6 +125,12 @@ final class DemoTransport implements Transport
             $p[0] === 'Index' && ($p[1] ?? '') === 'GetIndexB1LastAll' => ['indexB1' => $this->indices((int) ($p[3] ?? 1))],
             $p[0] === 'Index' && ($p[1] ?? '') === 'GetIndexB2History' => ['indexB2' => $this->indexHistory()],
             $p[0] === 'Index' && ($p[1] ?? '') === 'GetInstEffect' => ['instEffect' => $this->indexEffect((int) ($p[4] ?? 10))],
+            $p[0] === 'Msg' && ($p[1] ?? '') === 'GetMsgByInsCode' => $this->known($code) ? ['msg' => $this->messages($code)] : null,
+            $p[0] === 'Codal' && ($p[1] ?? '') === 'GetPreparedDataByInsCode' => $this->known($p[3] ?? '')
+                ? ['preparedData' => array_slice($this->codal((string) $p[3]), 0, max(1, (int) $p[2]))] : null,
+            $p[0] === 'Fund' && ($p[1] ?? '') === 'GetETFByInsCode' => $this->known($code) && ($nav = $this->nav($code)) ? ['etf' => $nav] : null,
+            $p[0] === 'Fund' && ($p[1] ?? '') === 'GetFunds' => ['funds' => $this->funds((int) ($p[2] ?? 0))],
+            str_contains($path, 'summary-table-data/') => ['data' => $this->tgjuRows(basename($path))],
             str_contains($path, 'PublicData/MarketDate') => [['isOpen' => MarketClock::isTradingDay($this->now())]],
             str_contains($path, 'MarketWatch/MarketWatchCash') => ['Items' => $this->marketWatch()],
             str_contains($path, 'MarketWatch/') => ['Items' => []],
@@ -248,17 +257,54 @@ final class DemoTransport implements Transport
         $key = 'market:' . count($sessions);
         if (!isset(self::$memo[$key])) {
             $state = self::seed('market');
+            $usd = $this->usdReturns();
             $out = [];
             $regime = 0.0;
             foreach ($sessions as $i => $_) {
                 if ($i % 60 === 0) {
                     $regime = (self::uniform($state) - 0.42) * 0.004;  // slow bull/bear phases
                 }
-                $out[] = $regime + 0.0009 + 0.011 * self::normal($state);
+                // The free-market dollar drives Tehran: a weaker rial lifts exporters and the index.
+                $out[] = $regime + 0.0005 + 0.35 * $usd[$i] + 0.010 * self::normal($state);
             }
             self::$memo[$key] = $out;
         }
         return self::$memo[$key];
+    }
+
+    /** @return list<float> daily free-market USD returns, one per session */
+    private function usdReturns(): array
+    {
+        $sessions = $this->sessions();
+        $key = 'usd:' . count($sessions);
+        if (!isset(self::$memo[$key])) {
+            $state = self::seed('usd');
+            $out = [];
+            foreach ($sessions as $i => $_) {
+                $jump = self::uniform($state) < 0.02 ? 0.03 * (self::uniform($state) < 0.75 ? 1 : -1) : 0.0;  // occasional shocks
+                $out[] = 0.0009 + 0.009 * self::normal($state) + $jump;
+            }
+            self::$memo[$key] = $out;
+        }
+        return self::$memo[$key];
+    }
+
+    /** Sensitivity of a sector to the dollar beyond the market's: exporters gain, importers lose. */
+    private static function usdTilt(string $sector): float
+    {
+        return match (true) {
+            str_contains($sector, 'طلا') => 0.85,   // gold in rial = world gold × dollar
+            str_contains($sector, 'فلزات'), str_contains($sector, 'کانه'), str_contains($sector, 'شیمیایی'),
+            str_contains($sector, 'فراورده') => 0.45,
+            str_contains($sector, 'خودرو'), str_contains($sector, 'بانک') => -0.15,
+            default => 0.0,
+        };
+    }
+
+    /** Gregorian maturity of a demo treasury bill, from the YYMMDD at the end of its name. */
+    private static function billMaturity(array $d): ?string
+    {
+        return str_starts_with($d[3], 'IRB') ? \Sabadgardan\Market\TreasuryYield::maturity($d[0], $d[1]) : null;
     }
 
     /**
@@ -285,13 +331,19 @@ final class DemoTransport implements Transport
         $n = count(self::UNIVERSE);
         $state = self::seed($code);
         $m = $this->marketFactor();
+        $usd = $this->usdReturns();
+        $tilt = self::usdTilt($d[2] . ' ' . $d[1]);
         $isFund = $vol < 0.002;  // fixed-income funds and bonds: a smooth, almost risk-free accrual
+        if ($maturity = self::billMaturity($d)) {
+            $days = (strtotime($maturity) - strtotime(end($sessions))) / 86400;
+            $endPrice = round(\Sabadgardan\Market\TreasuryYield::FACE / (1 + $drift) ** (max($days, 1) / 365));
+        }
 
         // Raw path of returns first, then scale so the last close lands near the configured price.
         $rets = [];
         foreach ($sessions as $i => $date) {
             $r = $isFund ? 0.00095 + 0.0008 * self::normal($state)
-                : $beta * $m[$i] + $drift / 250 - 0.0008 + $vol * self::normal($state);
+                : $beta * $m[$i] + $tilt * $usd[$i] + $drift / 250 - 0.0008 + $vol * self::normal($state);
             if (!$isFund && $i % $n === $index) {
                 $r = self::LIMIT;                       // today's limit-up (buy queue) symbol
             } elseif (!$isFund && ($i * 7 + 3) % $n === $index) {
@@ -592,5 +644,143 @@ final class DemoTransport implements Transport
                       'tradeValue' => round(4e10 * exp(0.9 * self::normal($state)) * max($share, 0.02))];
         }
         return $out;
+    }
+
+    // ------------------------------------------------------ disclosures, NAV, USD
+
+    /** Supervisor messages around capital increases and general meetings. @return list<array<string, mixed>> */
+    private function messages(string $code): array
+    {
+        $d = self::universe()[$code];
+        $sessions = $this->sessions();
+        $out = [];
+        foreach ($d[12] as $i => $ratio) {
+            if (isset($sessions[$i - 1])) {
+                $out[] = $this->msg($sessions[$i - 1], '0931', "{$d[0]} - افزایش سرمایه",
+                    sprintf('به اطلاع می‌رساند افزایش سرمایه‌ی شرکت %s به میزان %d درصد از محل سود انباشته در اداره‌ی ثبت شرکت‌ها به ثبت رسیده است.', $d[1], $ratio * 100));
+            }
+        }
+        $state = self::seed($code . ':msg');
+        // Meetings halt a symbol for a session; a recent one is rarer, as on the real market.
+        foreach ([90 => 0.45, 30 => 0.6, 4 => 0.85] as $ago => $skip) {
+            $i = count($sessions) - 1 - $ago - (int) (self::uniform($state) * 3);
+            if ($i < 1 || self::uniform($state) < $skip) {
+                continue;
+            }
+            $out[] = $this->msg($sessions[$i], '0815', "توقف نماد {$d[0]}", "نماد {$d[0]} جهت برگزاری مجمع عمومی عادی سالیانه متوقف شد.");
+            $out[] = $this->msg($sessions[$i + 1] ?? $sessions[$i], '0900', "بازگشایی نماد {$d[0]}", "نماد {$d[0]} پس از برگزاری مجمع بازگشایی می‌شود.");
+        }
+        usort($out, static fn ($a, $b) => [$b['dEven'], $b['hEven']] <=> [$a['dEven'], $a['hEven']]);
+        return $out;
+    }
+
+    private function msg(string $date, string $hm, string $title, string $desc): array
+    {
+        return ['dEven' => (int) str_replace('-', '', $date), 'hEven' => (int) ($hm . '00'), 'tseTitle' => $title, 'tseDesc' => $desc, 'flow' => 1];
+    }
+
+    /** Monthly activity reports, quarterly statements and meeting notices, newest first. @return list<array<string, mixed>> */
+    private function codal(string $code): array
+    {
+        $d = self::universe()[$code];
+        if (str_starts_with($d[3], 'IRB')) {
+            return [];
+        }
+        $fund = str_starts_with($d[3], 'IRT');
+        [$jy, $jm] = Jalali::fromGregorian(...array_map('intval', explode('-', MarketClock::local($this->now(), 'Y-m-d'))));
+        $out = [];
+        for ($k = 1; $k <= 12; $k++) {
+            $pm = $jm - $k;
+            $py = $jy;
+            while ($pm < 1) {
+                $pm += 12;
+                $py--;
+            }
+            $last = $pm <= 6 ? 31 : ($pm < 12 ? 30 : 29);
+            $end = sprintf('%04d/%02d/%02d', $py, $pm, $last);
+            [$ny, $nm] = $pm === 12 ? [$py + 1, 1] : [$py, $pm + 1];
+            $publish = sprintf('%04d/%02d/%02d 18:%02d:00', $ny, $nm, 9 + $k % 5, 10 + $k);
+            $out[] = $this->letter($code, $fund ? "صورت وضعیت پرتفوی صندوق ماهانه منتهی به $end" : "گزارش فعالیت ماهانه دوره ۱ ماهه منتهی به $end", $publish);
+            if (!$fund && in_array($pm, [3, 6, 9, 12], true)) {
+                $out[] = $this->letter($code, "اطلاعات و صورت‌های مالی میاندوره‌ای دوره ۳ ماهه منتهی به $end (حسابرسی نشده)",
+                    sprintf('%04d/%02d/%02d 20:05:00', $ny, $nm, 25));
+            }
+            if (!$fund && $d[13] && $nm === $d[13]) {
+                $out[] = $this->letter($code, 'آگهی دعوت به مجمع عمومی عادی سالیانه صاحبان سهام', sprintf('%04d/%02d/%02d 16:40:00', $ny, $nm, 2));
+            }
+        }
+        usort($out, static fn ($a, $b) => strcmp($b['publishDateTime'], $a['publishDateTime']));
+        return $out;
+    }
+
+    private function letter(string $code, string $title, string $publish): array
+    {
+        $serial = substr(sha1($code . $title), 0, 12);
+        return ['symbol' => self::universe()[$code][0], 'name' => self::universe()[$code][1], 'title' => $title,
+                'letterCode' => 'ن-۳۰', 'sentDateTime' => $publish, 'publishDateTime' => $publish,
+                'url' => "/Reports/Decision.aspx?LetterSerial=DEMO$serial", 'tracingNo' => abs(crc32($serial))];
+    }
+
+    /** NAVs of the demo funds: leveraged funds trade at a premium after rallies. @return array<string, float>|null */
+    private function nav(string $code): ?array
+    {
+        $d = self::universe()[$code];
+        if (!str_starts_with($d[3], 'IRT')) {
+            return null;
+        }
+        $close = $this->current($code)['close'];
+        $premium = match (true) {
+            str_contains($d[1], 'اهرم') => 0.083,
+            str_contains($d[1], 'طلا') => 0.021,
+            default => -0.002,
+        };
+        $red = round($close / (1 + $premium));
+        $sessions = $this->sessions();
+        return ['insCode' => $code, 'navRed' => $red, 'navSub' => round($red * 1.004), 'navStat' => round($red * 1.002),
+                'deven' => (int) str_replace('-', '', (string) end($sessions))];
+    }
+
+    /** Fund registry of one type (Fund/GetFunds/{type}), as fipiran publishes it. @return list<array<string, mixed>> */
+    private function funds(int $type): array
+    {
+        $out = [];
+        foreach (self::universe() as $code => $d) {
+            $class = \Sabadgardan\Market\AssetClass::classify($d[3], $d[1], $d[0], $d[2], $d[15] ?? '');
+            if ((\Sabadgardan\Market\FundNav::REGISTRY_TYPES[$class->kind] ?? null) !== $type || !($nav = $this->nav((string) $code))) {
+                continue;
+            }
+            $rows = $this->series((string) $code);
+            $last = end($rows)['close'];
+            $yearAgo = $rows[max(0, count($rows) - 251)]['close'];
+            $out[] = ['regNo' => (string) (11000 + $d[11]), 'mfName' => $d[1], 'insCode' => (string) $code] + $nav
+                + ['netAsset' => round($nav['navRed'] * $d[11] * 1e5), 'day365Return' => round(($last / $yearAgo - 1) * 100, 2)];
+        }
+        return $out;
+    }
+
+    /** tgju rows, newest first: [open, low, high, close, change, change %, Y/m/d, jalali]. @return list<list<string>> */
+    private function tgjuRows(string $slug): array
+    {
+        if (!in_array($slug, ['price_dollar_rl', 'sekee'], true)) {
+            return [];
+        }
+        $level = $slug === 'sekee' ? 330_000_000.0 : 1_030_000.0;
+        $rets = $this->usdReturns();
+        $sessions = $this->sessions();
+        $prices = [];
+        for ($i = count($rets) - 1; $i >= 0; $i--) {
+            $prices[$i] = $level;
+            $level /= 1 + $rets[$i] * ($slug === 'sekee' ? 1.1 : 1.0);
+        }
+        $rows = [];
+        $fmt = static fn (float $v): string => number_format(round($v / 10) * 10);
+        for ($i = count($rets) - 1; $i >= 0; $i--) {
+            $c = $prices[$i];
+            $o = $prices[$i - 1] ?? $c;
+            [$y, $m, $dd] = array_map('intval', explode('-', $sessions[$i]));
+            $rows[] = [$fmt($o), $fmt(min($o, $c) * 0.995), $fmt(max($o, $c) * 1.005), $fmt($c), $fmt(abs($c - $o)),
+                       round(($c / $o - 1) * 100, 2) . '%', str_replace('-', '/', $sessions[$i]), vsprintf('%04d/%02d/%02d', Jalali::fromGregorian($y, $m, $dd))];
+        }
+        return $rows;
     }
 }

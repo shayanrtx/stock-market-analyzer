@@ -500,6 +500,10 @@
       var all = s.insights || [], items = all.filter(FILTERS[filter]);
       set("live-high", String(all.filter(function (i) { return i.severity >= 3; }).length));
       set("live-count", String((s.symbols || []).length));
+      if (s.regime) {
+        set("live-regime", "<span class='" + esc(s.regime.tone) + "'>" + esc(s.regime.label) + "</span>");
+        set("live-regime-sub", s.regime.state === "bear" ? "سیگنال خرید با معیار سخت‌گیرانه‌تر" : esc((s.regime.reasons || [])[0] || ""));
+      }
       set("live-sigcount", String((s.signals || []).length));
       set("live-feed", items.length ? items.map(function (i) {
         var cls = i.direction > 0 ? "up" : i.direction < 0 ? "down" : "flat";

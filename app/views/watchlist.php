@@ -1,7 +1,8 @@
 <?php
 /** @var \Sabadgardan\View\View $v
  *  @var list<array<string, mixed>> $items  watchlist rows (ins_code, symbol, name)
- *  @var array<string, \Sabadgardan\Market\SymbolBundle> $bundles  prices */
+ *  @var array<string, \Sabadgardan\Market\SymbolBundle> $bundles  prices
+ *  @var list<array<string, mixed>> $alerts  price alerts of the user */
 ?>
 <div class="page-head">
   <form method="post" action="<?= $v->url('watchlist') ?>" class="ac add-symbol" data-symbol-search data-submit>
@@ -12,6 +13,11 @@
   </form>
   <div class="sub">نمادهای دیده‌بان در رصد زنده بررسی می‌شوند و سیگنال خرید آن‌ها برایتان ارسال می‌شود.</div>
 </div>
+
+<?php if ($alerts): ?>
+  <?= $v->card('هشدارهای قیمت', $v->partial('partials/alerts', ['alerts' => $alerts, 'back' => '/watchlist', 'showSymbol' => true]), 12,
+      'price_alerts', 'برای افزودن، در صفحه‌ی تحلیل هر نماد «هشدار قیمت» را بزنید') ?>
+<?php endif; ?>
 
 <?php if (!$items): ?>
   <section class="empty-hero">

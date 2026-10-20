@@ -33,7 +33,7 @@ final class PortfolioController extends Controller
         }
         $service = $this->app->portfolioService();
         $valuation = $service->valuation($this->userId(), (int) $p['id']);
-        $performance = $valuation['transactions'] ? $service->performance($valuation['transactions']) : null;
+        $performance = $valuation['transactions'] ? $service->performance($valuation['transactions'], $this->userId()) : null;
         return $this->view($q, 'portfolio/dashboard', [
             'title' => $p['name'], 'portfolio' => $p, 'val' => $valuation, 'performance' => $performance,
             'nav' => 'portfolio', 'tour' => true, 'fees' => $this->fees(),

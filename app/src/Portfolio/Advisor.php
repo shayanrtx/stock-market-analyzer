@@ -16,6 +16,9 @@ final class Advisor
 {
     public const MAX_DAYS_TO_EXIT = 5.0;
     public const RISK_OVERWEIGHT = 1.5;
+    /** Fund premium over NAV (%) above which new money is overpaying; above PREMIUM_TRIM, take some off. */
+    public const PREMIUM_HIGH = 5.0;
+    public const PREMIUM_TRIM = 12.0;
     public const ACTIONS = ['add' => 'افزایش', 'hold' => 'نگهداری', 'trim' => 'کاهش', 'exit' => 'خروج تدریجی',
                             'halted' => 'متوقف'];
     public const ORDER = ['exit', 'trim', 'add', 'hold', 'halted'];
@@ -26,7 +29,8 @@ final class Advisor
 
     /** @return array{action: string, label: string, target_weight: float, reasons: list<string>} */
     public function advise(float $weight, ?float $score, ?float $probabilityUp, ?bool $aboveSma200, ?float $riskShare,
-                           ?float $daysToExit, ?string $status, ?float $rewardRisk = null, ?AssetClass $class = null): array
+                           ?float $daysToExit, ?string $status, ?float $rewardRisk = null, ?AssetClass $class = null,
+                           ?float $premium = null): array
     {
         $reasons = [];
         if ($status !== null && $status !== '' && $status !== 'مجاز') {
@@ -34,8 +38,12 @@ final class Advisor
         }
         // Cash-like holdings are the portfolio's liquidity reserve, not a growth bet: no score-based action.
         if ($class?->isCashLike()) {
-            return $this->result('hold', $weight, [$class->label() . ': بخش نقد و کم‌ریسک سبد است؛ وزن آن را بر اساس نیاز نقدینگی و '
-                . 'فرصت‌های خرید تنظیم کنید، نه بر اساس روند قیمت.']);
+            $reasons = [$class->label() . ': بخش نقد و کم‌ریسک سبد است؛ وزن آن را بر اساس نیاز نقدینگی و '
+                . 'فرصت‌های خرید تنظیم کنید، نه بر اساس روند قیمت.'];
+            if ($premium !== null && $premium > 1) {
+                $reasons[] = sprintf('قیمت %.1f٪ بالاتر از NAV است؛ برای نقدینگی جدید صندوق درآمد ثابت دیگری با حباب کمتر را بررسی کنید', $premium);
+            }
+            return $this->result('hold', $weight, $reasons);
         }
         if ($score === null) {
             return $this->result('hold', $weight, ['داده‌ی کافی برای ارزیابی نیست.']);
@@ -104,6 +112,22 @@ final class Advisor
             $reasons[] = 'اختیار معامله: سررسید دارد و ممکن است بی‌ارزش منقضی شود؛ تاریخ سررسید را پیگیری کنید';
         } elseif ($class?->kind === AssetClass::RIGHTS) {
             $reasons[] = 'حق تقدم: برای تبدیل به سهم باید مبلغ اسمی را تا مهلت پذیره‌نویسی پرداخت کنید';
+        }
+        if ($premium !== null && $class?->isFund()) {
+            // Buying above NAV loses the premium when enthusiasm fades, even if the assets don't move.
+            if ($premium > self::PREMIUM_TRIM && $action !== 'exit') {
+                $action = 'trim';
+                $target = min($target, $weight * 0.8);
+                $reasons[] = sprintf('حباب %.1f٪: قیمت خیلی بالاتر از ارزش دارایی‌های صندوق است؛ بخشی از سود را با فروش در حباب نقد کنید', $premium);
+            } elseif ($premium > self::PREMIUM_HIGH) {
+                if ($action === 'add') {
+                    $action = 'hold';
+                    $target = min($target, $weight);
+                }
+                $reasons[] = sprintf('حباب %.1f٪: خرید جدید یعنی پرداخت بیش از ارزش دارایی‌ها؛ تا کاهش حباب صبر کنید', $premium);
+            } elseif ($premium < -3) {
+                $reasons[] = sprintf('%.1f٪ زیر NAV معامله می‌شود (تخفیف)؛ خرید زیر ارزش دارایی‌هاست', abs($premium));
+            }
         }
         if ($daysToExit !== null && $daysToExit > self::MAX_DAYS_TO_EXIT) {
             $reasons[] = sprintf('خروج کامل حدود %d جلسه طول می‌کشد (ریسک نقدشوندگی)', round($daysToExit));

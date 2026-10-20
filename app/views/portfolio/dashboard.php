@@ -139,6 +139,38 @@ echo $v->card('ترکیب دارایی‌ها', $v->chart(Charts::donut($alloc),
 <p class="faint" style="font-size:12px;margin:10px 0 0">سود و زیان با کسر کارمزد فروش (ارزش خالص فروش) محاسبه شده است، همان‌طور که در صورت‌حساب کارگزاری می‌بینید.</p>
 <?php echo $v->card('دارایی‌ها', (string) ob_get_clean(), 12, 'holdings'); ?>
 
+<?php if ($performance && ($ret = $performance['returns'])): ?>
+  <?php ob_start();
+  $cmp = [
+      ['سبد شما (بازده زمان‌وزنی)', $ret['twr'], 'twr'],
+      ['شاخص کل بورس', $ret['benchmark'], ''],
+      ['تورم (فرض تنظیمات)', $ret['inflation'], ''],
+      ['نرخ بدون ریسک (با نرخ امروز)', $ret['risk_free'], ''],
+  ];
+  $twrTotal = $ret['twr']['total']; ?>
+  <div class="table-wrap"><table class="returns">
+    <thead><tr><th></th><th>کل دوره</th><th>سالانه</th><th>سبد بهتر بوده؟</th></tr></thead>
+    <tbody>
+      <?php foreach ($cmp as [$label, $r, $key]): ?>
+        <tr class="<?= $key ? 'mine' : '' ?>"><td><?= $label ?></td>
+          <td><?= $r['total'] !== null ? $v->pct($r['total'] * 100, 1, $key !== '') : '<span class="faint">-</span>' ?></td>
+          <td><?= $r['annual'] !== null ? $v->pct($r['annual'] * 100, 1, false, false) : '<span class="faint">-</span>' ?></td>
+          <td><?php if ($key || $r['total'] === null): ?><span class="faint">-</span>
+            <?php else: $beat = $twrTotal > $r['total']; ?><span class="pill <?= $beat ? 'up' : 'down' ?>"><?= $beat ? 'بله' : 'خیر' ?>
+              <?= $v->pct(($twrTotal - $r['total']) * 100, 1, false) ?></span><?php endif; ?></td></tr>
+      <?php endforeach; ?>
+      <tr><td>بازده پولی شما (XIRR) <?= $v->help('xirr') ?></td><td><span class="faint">-</span></td>
+        <td><?= $ret['xirr'] !== null ? $v->pct($ret['xirr'] * 100, 1, true, false) : '<span class="faint">-</span>' ?></td><td><span class="faint">-</span></td></tr>
+    </tbody>
+  </table></div>
+  <p class="faint" style="font-size:12px;margin:8px 0 0">از اولین خرید (<?= $v->e($v->jdate($ret['start'])) ?>) تا <?= $v->e($v->jdate($ret['end'])) ?>، <?= $v->num($ret['days']) ?> روز؛ پس از کسر کارمزدها.
+    <?= $ret['twr']['annual'] === null ? 'دوره‌ی کمتر از ۶ ماه سالانه نمی‌شود، چون عدد سالانه‌ی دوره‌های کوتاه گمراه‌کننده است.' : '' ?></p>
+  <?php $table = (string) ob_get_clean();
+  echo $v->card('بازده سبد در برابر شاخص، تورم و سود بدون ریسک', $v->chart(Charts::growth($ret['index'], $ret['bench_index']), 'short') . $table,
+      12, 'returns', 'بازده زمان‌وزنی مهارت انتخاب سهم را می‌سنجد؛ بازده پولی زمان‌بندی واریزها را هم');
+  ?>
+<?php endif; ?>
+
 <?php
 if ($performance && count($performance['monthly']) > 1) {
     $monthly = array_slice(array_map(static fn ($x) => $x / 10, $performance['monthly']), -12, null, true);

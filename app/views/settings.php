@@ -6,7 +6,9 @@
  *  @var string $linkCode
  *  @var array<string, float> $values
  *  @var array<string, array> $fields SettingsController::ANALYSIS_FIELDS
- *  @var array{buy: bool, sell: bool, min: float} $prefs */
+ *  @var array{buy: bool, sell: bool, disclosures: bool, min: float} $prefs
+ *  @var bool $riskFreeAuto  follow treasury bill yields instead of the fixed rate
+ *  @var array{rate: float, bills: list<array>}|null $treasury current treasury yields */
 $linked = array_column($channels, null, 'channel');
 ?>
 <section class="card s6" id="notify">
@@ -49,6 +51,8 @@ $linked = array_column($channels, null, 'channel');
     <?= $v->csrf() ?>
     <label class="checkbox"><input type="checkbox" name="buy" value="1" <?= $prefs['buy'] ? 'checked' : '' ?>> سیگنال‌های خرید (نمادهای سبد و دیده‌بان)</label>
     <label class="checkbox"><input type="checkbox" name="sell" value="1" <?= $prefs['sell'] ? 'checked' : '' ?>> هشدارهای فروش (فقط نمادهایی که دارید)</label>
+    <label class="checkbox"><input type="checkbox" name="disclosures" value="1" <?= $prefs['disclosures'] ? 'checked' : '' ?>> اطلاعیه‌های مهم کدال و ناظر (توقف، مجمع، افزایش سرمایه، سود نقدی)</label>
+    <p class="faint" style="font-size:12px;margin:2px 0 8px">هشدارهای قیمتی که در صفحه‌ی هر نماد می‌گذارید همیشه ارسال می‌شوند.</p>
     <div class="field" style="margin-top:10px"><label for="minp">حداقل احتمال موفقیت برای ارسال سیگنال خرید</label>
       <div class="input-unit"><input id="minp" name="min_probability" value="<?= $v->e($prefs['min']) ?>" inputmode="decimal" class="num-input"><span>٪</span></div>
       <span class="hint">سیگنال‌هایی با احتمال تاریخی کمتر از این عدد ارسال نمی‌شوند (پیشنهاد: ۵۵ تا ۶۵).</span></div>
@@ -61,6 +65,17 @@ $linked = array_column($channels, null, 'channel');
   <form method="post" action="<?= $v->url('settings/analysis') ?>">
     <?= $v->csrf() ?>
     <p class="muted" style="font-size:13px">این اعداد در سنجش بازده واقعی (در برابر تورم)، نسبت شارپ، پیشنهادهای وزن و محاسبه‌ی کارمزد تراکنش‌ها استفاده می‌شوند.</p>
+    <label class="checkbox"><input type="checkbox" name="risk_free_auto" value="1" <?= $riskFreeAuto ? 'checked' : '' ?>>
+      نرخ بدون ریسک را خودکار از بازده اسناد خزانه (اخزا) بگیر</label>
+    <p class="hint faint" style="font-size:12px;margin:2px 0 12px">
+      <?php if ($treasury): ?>
+        بازده امروز اسناد خزانه: <b class="num"><?= $v->pct($treasury['rate'] * 100, 1, false, false) ?></b> سالانه
+        (میانه‌ی <?= $v->num(count($treasury['bills'])) ?> اخزا با سررسید ۲ تا ۲۴ ماه؛
+        <?= $v->e(implode('، ', array_map(static fn ($b) => $b['symbol'] . ': ' . strip_tags($v->pct($b['ytm'] * 100, 1, false, false)), array_slice($treasury['bills'], 0, 4)))) ?>).
+      <?php else: ?>
+        بازده اسناد خزانه الان در دسترس نیست؛ تا وقتی برقرار شود عدد پایین استفاده می‌شود.
+      <?php endif; ?>
+    </p>
     <div class="row2">
       <?php foreach ($fields as $key => [$label, $unit, $min, $max]): ?>
         <div class="field"><label for="f-<?= $key ?>"><?= $label ?></label>

@@ -20,10 +20,38 @@ use Sabadgardan\Market\PriceHistory;
  */
 final class PotentialAnalyzer
 {
+    /** @param array<string, float> $multipliers calibrated factor-weight multipliers by factor name (loadMultipliers) */
     public function __construct(
         private float $inflationAnnual = 0.35,
         private float $riskFreeAnnual = 0.30,
+        private array $multipliers = [],
     ) {
+    }
+
+    /**
+     * Factor multipliers from the research lab's calibration (``tse-analyzer research calibrate --out
+     * config/weights.json`` in the Python version): {"version": 1, "factors": {name: multiplier}}.
+     * Names must match the factor names here byte for byte; a factor without evidence keeps ×1.
+     * Anything malformed is ignored rather than allowed to distort every score.
+     *
+     * @return array<string, float>
+     */
+    public static function loadMultipliers(string $path): array
+    {
+        if (!is_file($path)) {
+            return [];
+        }
+        $data = json_decode((string) @file_get_contents($path), true);
+        if (!is_array($data) || ($data['version'] ?? null) !== 1 || !is_array($data['factors'] ?? null)) {
+            return [];
+        }
+        $out = [];
+        foreach ($data['factors'] as $name => $m) {
+            if (is_string($name) && (is_int($m) || is_float($m)) && $m >= 0 && $m <= 3) {
+                $out[$name] = (float) $m;
+            }
+        }
+        return $out;
     }
 
     /**
@@ -220,9 +248,10 @@ final class PotentialAnalyzer
                 Factor::STATISTICAL);
         }
 
-        $totalWeight = array_sum(array_map(static fn (Factor $x) => $x->weight, $f));
+        $weight = fn (Factor $x): float => $x->weight * ($this->multipliers[$x->name] ?? 1.0);
+        $totalWeight = array_sum(array_map($weight, $f));
         foreach ($f as $x) {
-            $x->contribution = $totalWeight ? 50 * $x->score * $x->weight / $totalWeight : 0.0;
+            $x->contribution = $totalWeight ? 50 * $x->score * $weight($x) / $totalWeight : 0.0;
         }
         $score = 50 + array_sum(array_map(static fn (Factor $x) => $x->contribution, $f));
         $levels = self::levels($h, $price, $s200, $record, $atr);

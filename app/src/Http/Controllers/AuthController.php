@@ -71,6 +71,61 @@ final class AuthController extends Controller
         return $this->redirect($q, '/');
     }
 
+    public function forgotForm(Request $q): Response
+    {
+        return $this->view($q, 'auth/forgot', ['title' => 'بازیابی رمز عبور', 'username' => '', 'error' => ''], 'layout_guest');
+    }
+
+    /** Sends a reset code to the account's linked messenger; the answer is the same whether or not it exists. */
+    public function forgot(Request $q): Response
+    {
+        $username = $q->input('username');
+        $auth = $this->app->auth();
+        if ($auth->isThrottled($q->ip())) {
+            return $this->view($q, 'auth/forgot', ['title' => 'بازیابی رمز عبور', 'username' => $username,
+                'error' => 'تلاش‌های زیادی از این شبکه انجام شده است. چند دقیقه‌ی دیگر دوباره امتحان کنید.'], 'layout_guest', 429);
+        }
+        if ($username === '') {
+            return $this->view($q, 'auth/forgot', ['title' => 'بازیابی رمز عبور', 'username' => '',
+                'error' => 'نام کاربری را وارد کنید.'], 'layout_guest', 422);
+        }
+        $auth->recordFailure($q->ip(), $username);   // also caps how many accounts one network can message
+        $sent = $this->app->passwordReset()->request($username, $this->app->settings()->system('site_name'), $this->app->now());
+        $this->audit($q, 'password_reset_request', $username . ($sent ? '' : ' (ارسال نشد)'), null);
+        return $this->view($q, 'auth/reset', ['title' => 'بازیابی رمز عبور', 'username' => $username, 'error' => '', 'sent' => true],
+            'layout_guest');
+    }
+
+    public function resetForm(Request $q): Response
+    {
+        return $this->view($q, 'auth/reset', ['title' => 'بازیابی رمز عبور', 'username' => $q->query('u'), 'error' => '',
+            'sent' => false], 'layout_guest');
+    }
+
+    public function reset(Request $q): Response
+    {
+        $username = $q->input('username');
+        $password = (string) ($q->post['password'] ?? '');
+        $form = static fn (string $error) => ['title' => 'بازیابی رمز عبور', 'username' => $username, 'error' => $error, 'sent' => false];
+        $auth = $this->app->auth();
+        if ($auth->isThrottled($q->ip())) {
+            return $this->view($q, 'auth/reset', $form('تلاش‌های زیادی از این شبکه انجام شده است. چند دقیقه‌ی دیگر دوباره امتحان کنید.'),
+                'layout_guest', 429);
+        }
+        if ($password !== (string) ($q->post['password_confirm'] ?? '')) {
+            return $this->view($q, 'auth/reset', $form('تکرار رمز جدید یکسان نیست.'), 'layout_guest', 422);
+        }
+        $service = $this->app->passwordReset();
+        $error = $service->reset($username, $q->input('code'), $password, $this->app->now());
+        if ($error !== null) {
+            $auth->recordFailure($q->ip(), $username);
+            return $this->view($q, 'auth/reset', $form($error), 'layout_guest', 422);
+        }
+        $this->audit($q, 'password_reset', $username, $service->userId($username));
+        return $this->view($q, 'auth/login', ['title' => 'ورود', 'username' => $username, 'error' => '',
+            'notice' => 'رمز عبور تغییر کرد؛ با رمز جدید وارد شوید.', 'registrationOpen' => $this->registrationOpen()], 'layout_guest');
+    }
+
     public function logout(Request $q): Response
     {
         $this->audit($q, 'logout');

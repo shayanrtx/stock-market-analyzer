@@ -11,7 +11,15 @@ final class Response
         public readonly string $body = '',
         public readonly int $status = 200,
         public readonly array $headers = [],
+        public readonly ?string $file = null,   // streamed instead of $body (downloads)
     ) {
+    }
+
+    /** A file sent as an attachment, streamed from disk. */
+    public static function download(string $path, string $name, string $type = 'application/octet-stream'): self
+    {
+        return new self('', 200, ['Content-Type' => $type, 'Content-Length' => (string) filesize($path),
+            'Content-Disposition' => 'attachment; filename="' . str_replace(['"', "\r", "\n"], '', $name) . '"'], $path);
     }
 
     public static function html(string $body, int $status = 200): self
@@ -40,6 +48,10 @@ final class Response
         header('Cache-Control: no-store');
         foreach ($this->headers as $name => $value) {
             header("$name: $value");
+        }
+        if ($this->file !== null) {
+            readfile($this->file);
+            return;
         }
         echo $this->body;
     }

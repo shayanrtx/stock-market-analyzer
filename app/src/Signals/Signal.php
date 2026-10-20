@@ -64,6 +64,9 @@ final class Signal
             $lines[] = $this->side === self::BUY
                 ? sprintf('احتمال رسیدن به هدف پیش از حد ضرر: %d٪', round($this->probability * 100))
                 : sprintf('احتمال ادامه‌ی افت: %d٪', round($this->probability * 100));
+            if (isset($this->odds['win_low'], $this->odds['win_high']) && $this->side === self::BUY) {
+                $lines[] = sprintf('بازه‌ی اطمینان ۹۵٪: %d٪ تا %d٪', round($this->odds['win_low'] * 100), round($this->odds['win_high'] * 100));
+            }
             $lines[] = sprintf('(بر پایه‌ی %d موقعیت %sتاریخی، افق %d جلسه)', $this->odds['samples'] ?? 0,
                 !empty($this->odds['conditioned']) ? 'مشابه ' : '', $this->odds['horizon_days'] ?? 0);
         }

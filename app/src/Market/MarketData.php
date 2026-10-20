@@ -19,6 +19,7 @@ final class MarketData
         public readonly TsetmcClient $cdn,
         public readonly ?GatewayClient $gateway,
         private Database $db,
+        public readonly ?TgjuClient $tgju = null,
     ) {
     }
 
@@ -167,6 +168,32 @@ final class MarketData
         }
         return ['symbol' => $symbol, 'industry' => trim((string) Field::get($item, ['industryName', 'industry_Name'], '')) ?: 'سایر',
                 'change' => $change, 'value' => (float) Field::float($item, ['tradeValue', 'tradevalue'], 0.0)];
+    }
+
+    /**
+     * Supervisor messages and Codal announcements of a symbol, newest first; parts that fail are skipped.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function disclosures(string $insCode, int $top = 20): array
+    {
+        $data = $this->cdn->tryMany(['msg' => "Msg/GetMsgByInsCode/$insCode",
+                                     'codal' => "Codal/GetPreparedDataByInsCode/$top/$insCode"], TsetmcClient::TTL_INTRADAY);
+        return array_slice(Disclosures::merge(Field::list($data['msg'] ?? [], 'msg'),
+            Field::list($data['codal'] ?? [], 'preparedData')), 0, $top);
+    }
+
+    /** @return array<string, float> free-market USD (rial) by date, or [] when tgju is unreachable */
+    public function usd(): array
+    {
+        if (!$this->tgju) {
+            return [];
+        }
+        try {
+            return $this->tgju->history(TgjuClient::USD);
+        } catch (MarketException) {
+            return [];
+        }
     }
 
     /** @return array<string, float> TEDPIX closes by date, or [] when unavailable */

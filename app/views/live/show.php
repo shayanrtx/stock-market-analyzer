@@ -18,7 +18,8 @@ use Sabadgardan\Live\MarketClock;
     <?= $isAdmin ? '<a href="' . $v->url('admin/settings') . '">راهنمای تنظیم Cron</a>' : 'به مدیر سامانه اطلاع دهید.' ?></div>
 <?php endif; ?>
 
-<section class="kpis small" style="--cols:3">
+<section class="kpis small" style="--cols:4">
+  <div class="kpi" data-help="market_regime"><div class="label">روند بازار <?= $v->help('market_regime') ?></div><div class="value" id="live-regime">-</div><div class="sub" id="live-regime-sub">شاخص کل و پهنای بازار</div></div>
   <div class="kpi"><div class="label">نمادهای تحت رصد</div><div class="value" id="live-count">-</div><div class="sub">دارایی‌های سبد + دیده‌بان</div></div>
   <div class="kpi"><div class="label">رویدادهای مهم امروز</div><div class="value" id="live-high">-</div><div class="sub">شدت بالا (قابل اقدام)</div></div>
   <div class="kpi"><div class="label">سیگنال‌های امروز <?= $v->help('live_signals') ?></div><div class="value" id="live-sigcount">-</div><div class="sub"><a href="<?= $v->url('signals') ?>">تاریخچه‌ی سیگنال‌ها</a></div></div>

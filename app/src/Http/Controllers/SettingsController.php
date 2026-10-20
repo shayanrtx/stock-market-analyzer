@@ -13,7 +13,7 @@ final class SettingsController extends Controller
     /** Editable analysis keys: name => [label, unit, min, max, scale (shown = stored × scale)]. */
     public const ANALYSIS_FIELDS = [
         'inflation_annual' => ['تورم سالانه‌ی مورد انتظار', '٪', 0, 200, 100],
-        'risk_free_annual' => ['نرخ بدون ریسک (صندوق درآمد ثابت)', '٪', 0, 100, 100],
+        'risk_free_annual' => ['نرخ بدون ریسک (اگر خودکار خاموش باشد)', '٪', 0, 100, 100],
         'max_position_weight' => ['سقف وزن هر نماد در سبد', '٪', 5, 100, 1],
         'fee_stock_buy' => ['کارمزد خرید سهام', '٪', 0, 3, 100],
         'fee_stock_sell' => ['کارمزد فروش سهام (با مالیات)', '٪', 0, 3, 100],
@@ -40,9 +40,12 @@ final class SettingsController extends Controller
         }
         return $this->view($q, 'settings', ['title' => 'تنظیمات حساب', 'nav' => 'settings', 'channels' => $notifier->channels($uid),
             'links' => $links, 'values' => $values, 'fields' => self::ANALYSIS_FIELDS,
+            'riskFreeAuto' => $this->app->settings()->forUser($uid, 'risk_free_auto') !== '0',
+            'treasury' => $this->app->rates()->treasury(),
             'linkCode' => (string) $user['link_code'], 'enabled' => $notifier->enabledChannels(),
             'prefs' => ['buy' => $this->app->settings()->forUser($uid, 'notify_buy_signals') === '1',
                         'sell' => $this->app->settings()->forUser($uid, 'notify_sell_signals') === '1',
+                        'disclosures' => $this->app->settings()->forUser($uid, 'notify_disclosures') !== '0',
                         'min' => round($this->app->settings()->float($uid, 'notify_min_probability') * 100)]]);
     }
 
@@ -84,6 +87,7 @@ final class SettingsController extends Controller
             }
             $this->app->settings()->set($this->userId(), $key, (string) ($value / $scale));
         }
+        $this->app->settings()->set($this->userId(), 'risk_free_auto', $q->input('risk_free_auto') === '1' ? '1' : '0');
         $this->flash('success', 'پارامترهای تحلیل و کارمزد ذخیره شد.');
         return $this->redirect($q, '/settings');
     }
@@ -94,6 +98,7 @@ final class SettingsController extends Controller
         $uid = $this->userId();
         $s->set($uid, 'notify_buy_signals', $q->input('buy') === '1' ? '1' : '0');
         $s->set($uid, 'notify_sell_signals', $q->input('sell') === '1' ? '1' : '0');
+        $s->set($uid, 'notify_disclosures', $q->input('disclosures') === '1' ? '1' : '0');
         $min = max(0, min(95, (float) (Text::parseNumber($q->input('min_probability')) ?? 55)));
         $s->set($uid, 'notify_min_probability', (string) ($min / 100));
         $this->flash('success', 'تنظیمات اعلان ذخیره شد.');

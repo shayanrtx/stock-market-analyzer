@@ -191,9 +191,9 @@ final class View
      * Card wrapper. ``$help`` adds the "?" button and makes the card a stop of the guided tour.
      */
     public function card(string $title, string $body, int $span = 12, string $help = '', string $hint = '',
-                         string $actions = ''): string
+                         string $actions = '', string $id = ''): string
     {
-        $attr = $help !== '' ? ' data-help="' . $this->e($help) . '"' : '';
+        $attr = ($id !== '' ? ' id="' . $this->e($id) . '"' : '') . ($help !== '' ? ' data-help="' . $this->e($help) . '"' : '');
         return '<section class="card s' . $span . '"' . $attr . '><header><div class="card-title"><h2>' . $this->e($title)
             . '</h2>' . ($help !== '' ? $this->help($help) : '') . '</div>'
             . ($hint !== '' ? '<span class="hint">' . $this->e($hint) . '</span>' : '') . $actions . '</header>' . $body . '</section>';

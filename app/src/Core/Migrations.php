@@ -164,6 +164,39 @@ final class Migrations
                 $db->pdo->exec("ALTER TABLE instruments ADD COLUMN sub_sector VARCHAR(150) NOT NULL DEFAULT ''");
                 $db->pdo->exec("ALTER TABLE instruments ADD COLUMN board VARCHAR(100) NOT NULL DEFAULT ''");
             },
+            // 3: price alerts, announcements already seen per symbol, password reset over a linked messenger.
+            3 => static function (Database $db) use ($pk, $sfx): void {
+                $db->pdo->exec("CREATE TABLE price_alerts (
+                    id $pk,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    ins_code VARCHAR(25) NOT NULL,
+                    symbol VARCHAR(50) NOT NULL,
+                    direction VARCHAR(5) NOT NULL,
+                    price DECIMAL(20,4) NOT NULL,
+                    note VARCHAR(200) NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    triggered_at INTEGER,
+                    triggered_price DECIMAL(20,4)
+                )$sfx");
+                $db->pdo->exec('CREATE INDEX idx_alert_active ON price_alerts (triggered_at, ins_code)');
+                $db->pdo->exec("CREATE TABLE disclosures_seen (
+                    id $pk,
+                    ins_code VARCHAR(25) NOT NULL,
+                    item_key VARCHAR(64) NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    UNIQUE (ins_code, item_key)
+                )$sfx");
+                $db->pdo->exec("CREATE TABLE password_resets (
+                    id $pk,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    token_hash VARCHAR(64) NOT NULL,
+                    attempts SMALLINT NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    used_at INTEGER
+                )$sfx");
+                $db->pdo->exec('CREATE INDEX idx_reset_user ON password_resets (user_id, created_at)');
+            },
         ];
     }
 

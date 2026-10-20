@@ -8,9 +8,11 @@ use Sabadgardan\Analysis\Potential\PotentialAnalyzer;
 use Sabadgardan\Analysis\StockReport;
 use Sabadgardan\Core\Settings;
 use Sabadgardan\Market\AssetClass;
+use Sabadgardan\Market\FundNav;
 use Sabadgardan\Market\Instrument;
 use Sabadgardan\Market\Jalali;
 use Sabadgardan\Market\MarketData;
+use Sabadgardan\Market\Rates;
 
 /**
  * Portfolio views built from the ledger and market data:
@@ -24,6 +26,8 @@ final class PortfolioService
         private PortfolioRepository $repo,
         private MarketData $market,
         private Settings $settings,
+        private ?Rates $rates = null,
+        private array $multipliers = [],   // calibrated factor weights (PotentialAnalyzer::loadMultipliers)
     ) {
     }
 
@@ -105,16 +109,17 @@ final class PortfolioService
 
     /**
      * Daily value of the actual holdings (unadjusted prices × quantity held that day), cost basis and
-     * cumulative P/L (unrealized + realized + dividends), plus P/L per Jalali month.
+     * cumulative P/L (unrealized + realized + dividends), plus P/L per Jalali month and, given the
+     * user (for their inflation and risk-free assumptions), the return summary.
      *
      * @param list<Transaction> $txs
      * @return array<string, mixed>
      */
-    public function performance(array $txs): array
+    public function performance(array $txs, ?int $userId = null): array
     {
         $trades = array_values(array_filter($txs, static fn (Transaction $t) => $t->insCode));
         if (!$trades) {
-            return ['series' => [], 'monthly' => [], 'warnings' => []];
+            return ['series' => [], 'monthly' => [], 'warnings' => [], 'returns' => null];
         }
         usort($txs, static fn ($a, $b) => [$a->date, $a->id] <=> [$b->date, $b->id]);
         $codes = array_values(array_unique(array_map(static fn (Transaction $t) => (string) $t->insCode, $trades)));
@@ -167,7 +172,48 @@ final class PortfolioService
             $prevPnl = $pnl;
         }
 
-        return ['series' => $series, 'monthly' => $monthly, 'warnings' => $this->unrecordedCapitalIncreases($txs, $bundles)];
+        return ['series' => $series, 'monthly' => $monthly, 'warnings' => $this->unrecordedCapitalIncreases($txs, $bundles),
+                'returns' => $userId !== null ? $this->returnsSummary($userId, $txs, $series) : null];
+    }
+
+    /**
+     * Time- and money-weighted returns of the holdings since the first purchase, next to what the
+     * same period gave in TEDPIX, inflation (the user's assumption) and the risk-free rate.
+     *
+     * @param list<Transaction> $txs
+     * @param array<string, array{value: float, cost: float, pnl: float}> $series
+     * @return array<string, mixed>|null
+     */
+    private function returnsSummary(int $userId, array $txs, array $series): ?array
+    {
+        $firstTrade = min(array_map(static fn (Transaction $t) => $t->date,
+            array_filter($txs, static fn (Transaction $t) => $t->type === Transaction::BUY)) ?: ['9999-12-31']);
+        $series = array_filter($series, static fn ($d) => $d >= $firstTrade, ARRAY_FILTER_USE_KEY);
+        if (count($series) < 2) {
+            return null;
+        }
+        $twr = Returns::twrIndex(array_map(static fn ($r) => $r['value'], $series), $txs);
+        $start = (string) array_key_first($series);
+        $end = (string) array_key_last($series);
+        $days = (strtotime($end) - strtotime($start)) / 86400;
+        $total = end($twr) / 100 - 1;
+
+        $bench = array_filter($this->market->benchmark(), static fn ($d) => $d >= $start && $d <= $end, ARRAY_FILTER_USE_KEY);
+        $benchTotal = count($bench) >= 2 ? end($bench) / reset($bench) - 1 : null;
+        $years = $days / 365;
+        $inflation = $this->settings->float($userId, 'inflation_annual');
+        $riskFree = $this->rates?->riskFree($userId) ?? $this->settings->float($userId, 'risk_free_annual');
+        $row = static fn (?float $tot) => ['total' => $tot, 'annual' => $tot === null ? null : Returns::annualise($tot, $days)];
+        return [
+            'start' => $start, 'end' => $end, 'days' => $days,
+            'twr' => $row($total),
+            'xirr' => Returns::xirr(Returns::investorFlows($txs, $end, $series[$end]['value'])),
+            'benchmark' => $row($benchTotal),
+            'inflation' => ['total' => (1 + $inflation) ** $years - 1, 'annual' => $inflation],
+            'risk_free' => ['total' => (1 + $riskFree) ** $years - 1, 'annual' => $riskFree],
+            'index' => $twr,
+            'bench_index' => $bench,
+        ];
     }
 
     /**
@@ -209,10 +255,10 @@ final class PortfolioService
         if (!$positions) {
             return ['positions' => [], 'risk' => null, 'sectors' => [], 'types' => [], 'concentration' => [], 'warnings' => []];
         }
-        $analyzer = new PotentialAnalyzer($this->settings->float($userId, 'inflation_annual'),
-            $this->settings->float($userId, 'risk_free_annual'));
+        $riskFree = $this->rates?->riskFree($userId) ?? $this->settings->float($userId, 'risk_free_annual');
+        $analyzer = new PotentialAnalyzer($this->settings->float($userId, 'inflation_annual'), $riskFree, $this->multipliers);
         $advisor = new Advisor($this->settings->float($userId, 'max_position_weight'));
-        $risk = new RiskAnalyzer($this->settings->float($userId, 'risk_free_annual'));
+        $risk = new RiskAnalyzer($riskFree);
         $benchmark = $this->market->benchmark();
         $errors = [];
         $bundles = $this->market->bundles(array_column($positions, 'ins_code'), MarketData::PARTS_FULL, $errors);
@@ -222,10 +268,13 @@ final class PortfolioService
         foreach ($positions as $p) {
             $b = $bundles[$p['ins_code']] ?? null;
             $row = $p + ['potential' => null, 'report' => null, 'advice' => null, 'queue' => '', 'days_to_exit' => null,
-                         'sector' => '', 'risk_share' => null, 'volatility_pct' => null, 'return_1y_pct' => null];
+                         'sector' => '', 'risk_share' => null, 'volatility_pct' => null, 'return_1y_pct' => null, 'premium' => null];
             if ($b) {
                 $class = $b->assetClass();  // fresher than the registry: includes today's sub-sector
                 $row = ['class' => $class->label(), 'class_kind' => $class->kind, 'class_tone' => $class->tone()] + $row;
+                if ($class->isFund()) {
+                    $row['premium'] = FundNav::premium($b->closePrice(), FundNav::fetch($this->market->cdn, $b->instrument, $class));
+                }
             }
             if ($b && $b->history->count() > 1) {
                 $report = StockReport::build($b, $analyzer, $benchmark);
@@ -241,6 +290,14 @@ final class PortfolioService
         }
 
         $riskResult = $risk->analyze($values, $benchmark);
+        if ($riskResult) {
+            // Balance risk among the risky holdings only: a fixed-income fund barely moves, so
+            // equal risk would hand it nearly all the money.
+            $risky = array_flip(array_column(array_filter($out, static fn ($r) => !(new AssetClass($r['class_kind'] ?? AssetClass::UNKNOWN))->isCashLike()), 'symbol'));
+            $cov = array_map(static fn ($row) => array_intersect_key($row, $risky), array_intersect_key($riskResult['covariance'], $risky));
+            $parity = count($cov) >= 2 ? RiskAnalyzer::riskParity($cov) : null;
+            $riskResult['risk_parity'] = $parity ? array_map(static fn ($x) => $x * 100, $parity) : null;
+        }
         $sectors = $types = [];
         foreach ($out as &$row) {
             if ($riskResult) {
@@ -252,7 +309,7 @@ final class PortfolioService
             $sma200 = $row['report']?->technical['sma200'] ?? null;
             $row['advice'] = $advisor->advise($row['weight'], $pot?->score, $pot?->probabilityUp,
                 $sma200 ? $row['close'] > $sma200 : null, $row['risk_share'], $row['days_to_exit'], $row['status'],
-                $pot?->levels['reward_risk'] ?? null, new AssetClass($row['class_kind']));
+                $pot?->levels['reward_risk'] ?? null, new AssetClass($row['class_kind']), $row['premium']);
             $sectors[$row['sector'] ?: 'نامشخص'] = ($sectors[$row['sector'] ?: 'نامشخص'] ?? 0) + $row['weight'];
             $types[$row['class']] = ($types[$row['class']] ?? 0) + $row['weight'];
         }
@@ -295,6 +352,9 @@ final class PortfolioService
             }
             if ($p['days_to_exit'] !== null && $p['days_to_exit'] > Advisor::MAX_DAYS_TO_EXIT) {
                 $w[] = sprintf('خروج کامل از «%s» حدود %d جلسه طول می‌کشد (نقدشوندگی پایین).', $s, round($p['days_to_exit']));
+            }
+            if ($p['premium'] !== null && $p['premium'] > Advisor::PREMIUM_HIGH) {
+                $w[] = sprintf('حباب «%s» %.1f٪ است؛ قیمت بالاتر از ارزش دارایی‌های صندوق است.', $s, $p['premium']);
             }
             $stop = $p['potential']?->levels['stop'] ?? null;
             if ($stop && $p['close'] && $p['close'] < $stop) {

@@ -211,6 +211,51 @@ final class HttpTest extends TestCase
         $this->assertContains('Cron درست کار می‌کند', $after->body);
     }
 
+    public function testPriceAlertRoutes(): void
+    {
+        $alice = $this->user('alice');
+        $this->user('bob');
+        $code = $this->insCode('فملی');
+        $this->login('alice');
+        $r = $this->send('POST', '/alerts', ['ins_code' => $code, 'direction' => 'above', 'price' => '1', 'back' => "/stock?ins=$code"]);
+        $this->assertSame(303, $r->status);
+        $this->assertContains('همین حالا بالاتر از', $_SESSION['_flash'][0]['message'], 'an alert that is already true is refused');
+        $_SESSION['_flash'] = [];
+        $this->send('POST', '/alerts', ['ins_code' => $code, 'direction' => 'above', 'price' => '۹۹٬۰۰۰', 'note' => 'یادداشت-محرمانه-آلیس']);
+        $this->assertSame(1, (int) $this->db->value('SELECT COUNT(*) FROM price_alerts WHERE user_id = ?', [$alice]));
+        $this->assertNear(99000.0, (float) $this->db->value('SELECT price FROM price_alerts'));
+        $this->assertContains('یادداشت-محرمانه-آلیس', $this->send('GET', '/watchlist')->body, 'alice sees her alert');
+        $id = (int) $this->db->value('SELECT id FROM price_alerts');
+
+        $this->login('bob');
+        $this->send('POST', "/alerts/$id/delete");
+        $this->assertSame(1, (int) $this->db->value('SELECT COUNT(*) FROM price_alerts'), "bob can't delete alice's alert");
+        $this->assertNotContains('یادداشت-محرمانه-آلیس', $this->send('GET', '/watchlist')->body, 'nor see it');
+        $this->login('alice');
+        $this->send('POST', "/alerts/$id/delete");
+        $this->assertSame(0, (int) $this->db->value('SELECT COUNT(*) FROM price_alerts'));
+    }
+
+    public function testPasswordResetDoesNotRevealWhichAccountsExist(): void
+    {
+        $this->user('alice');
+        $_SESSION = [];
+        $known = $this->send('POST', '/forgot', ['username' => 'alice']);
+        $unknown = $this->send('POST', '/forgot', ['username' => 'nobody']);
+        $this->assertSame(200, $known->status);
+        $this->assertSame($known->status, $unknown->status);
+        $strip = static fn (string $html) => preg_replace(['/value="[^"]*"/', '/name="_token"[^>]*>/'], '', $html);
+        $this->assertSame($strip($known->body), $strip($unknown->body), 'the same answer either way');
+        $bad = $this->send('POST', '/reset', ['username' => 'alice', 'code' => '12345678', 'password' => 'newpassword9',
+                                              'password_confirm' => 'newpassword9']);
+        $this->assertSame(422, $bad->status);
+        $this->assertContains('کد بازیابی نادرست یا منقضی است.', $bad->body);
+        for ($i = 0; $i < 10; $i++) {
+            $this->send('POST', '/forgot', ['username' => 'alice']);
+        }
+        $this->assertSame(429, $this->send('POST', '/forgot', ['username' => 'alice'])->status, 'one network is throttled');
+    }
+
     /** Smoke test: every page renders for an admin with a real portfolio. */
     public function testEveryPageRenders(): void
     {
@@ -225,7 +270,7 @@ final class HttpTest extends TestCase
         $pages = ['/', "/portfolio/$pid/analytics", "/portfolio/$pid/transactions", '/portfolios', '/stock',
                   '/stock?s=' . rawurlencode('فملی'), '/stock?s=' . rawurlencode('کمند'), '/market', '/live', '/signals',
                   '/watchlist', '/watchlist/analysis', '/settings', '/admin', '/admin/users', '/admin/settings', '/admin/audit',
-                  '/admin/health'];
+                  '/admin/health', '/forgot', '/reset'];
         foreach ($pages as $page) {
             [$path, $qs] = array_pad(explode('?', $page, 2), 2, '');
             parse_str($qs, $query);
@@ -235,6 +280,16 @@ final class HttpTest extends TestCase
         }
         $stock = $this->send('GET', '/stock', query: ['s' => 'عیار']);
         $this->assertContains('صندوق طلا', $stock->body);
+        foreach (['حباب (قیمت به NAV)', 'اطلاعیه‌ها و پیام‌های ناظر', 'رابطه با دلار آزاد', 'هشدار قیمت', 'بازه‌ی ۹۵٪'] as $card) {
+            $this->assertContains($card, $stock->body, 'stock page');
+        }
+        $market = $this->send('GET', '/market')->body;
+        foreach (['روند اولیه‌ی بازار', 'بازده اسناد خزانه', 'دلار آزاد'] as $card) {
+            $this->assertContains($card, $market, 'market page');
+        }
+        $this->assertContains('بازده سبد در برابر شاخص، تورم و سود بدون ریسک', $this->send('GET', '/')->body);
+        $this->assertContains('وزن برابری ریسک', $this->send('GET', "/portfolio/$pid/analytics")->body);
+        $this->assertContains('پشتیبان پایگاه داده', $this->send('GET', '/admin/health')->body);
         $live = json_decode($this->send('GET', '/api/live', json: true)->body, true);
         $this->assertSame(4, count($live['symbols']));
         $search = json_decode($this->send('GET', '/api/search', query: ['q' => 'اهرم'], json: true)->body, true);

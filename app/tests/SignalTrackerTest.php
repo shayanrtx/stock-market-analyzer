@@ -64,6 +64,15 @@ final class SignalTrackerTest extends TestCase
         $this->assertNear(2.0, $o['return_pct'], 0.01);
     }
 
+    public function testCapitalIncreaseTheDayAfterTheSignal(): void
+    {
+        // Signal on 01-03; a 100% bonus takes effect on the very next session (reference 500).
+        $h = $this->history([[1000, 1000, 1000], [520, 495, 515, 500], [560, 540, 555]]);
+        $o = T::outcome($this->signal(), $h);
+        $this->assertSame(T::TARGET, $o['status'], 'not a stop: prices are in the signal\'s terms');
+        $this->assertSame(2, $o['days']);
+    }
+
     public function testExpiredAfterHorizon(): void
     {
         $bars = [[1000, 1000, 1000]];

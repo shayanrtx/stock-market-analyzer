@@ -7,9 +7,11 @@ namespace Sabadgardan\Http\Controllers;
 use Sabadgardan\Analysis\MoneyFlow;
 use Sabadgardan\Analysis\Potential\HistoricalStudy;
 use Sabadgardan\Analysis\Potential\PotentialAnalyzer;
+use Sabadgardan\Analysis\Sensitivity;
 use Sabadgardan\Analysis\StockReport;
 use Sabadgardan\Http\Request;
 use Sabadgardan\Http\Response;
+use Sabadgardan\Market\FundNav;
 use Sabadgardan\Market\MarketData;
 use Sabadgardan\Market\MarketException;
 use Sabadgardan\Portfolio\Ledger;
@@ -39,9 +41,17 @@ final class StockController extends Controller
         }
         $uid = $this->userId();
         $settings = $this->app->settings();
-        $analyzer = new PotentialAnalyzer($settings->float($uid, 'inflation_annual'), $settings->float($uid, 'risk_free_annual'));
+        $analyzer = new PotentialAnalyzer($settings->float($uid, 'inflation_annual'), $this->app->rates()->riskFree($uid),
+            $this->app->factorMultipliers());
         $report = StockReport::build($bundle, $analyzer, $market->benchmark());
         $watched = (bool) array_filter($this->app->portfolios()->watchlist($uid), static fn ($w) => $w['ins_code'] === $code);
+        $class = $bundle->assetClass();
+        $usd = $class->isCashLike() ? [] : $market->usd();
+        try {
+            $disclosures = $market->disclosures($code, 12);
+        } catch (MarketException) {
+            $disclosures = [];
+        }
         return $this->view($q, 'stock/show', [
             'title' => $bundle->instrument->symbol . ' — تحلیل', 'r' => $report, 'watched' => $watched,
             'plan' => $this->tradePlan($report, $settings->float($uid, 'inflation_annual')),
@@ -49,7 +59,15 @@ final class StockController extends Controller
             'holdings' => $this->holdings($uid, $code),
             'portfolio' => $this->app->portfolios()->defaultPortfolio($uid),
             'fees' => $settings->fees($uid)->all(),
-            'riskFree' => $settings->float($uid, 'risk_free_annual'),
+            'riskFree' => $this->app->rates()->riskFree($uid),
+            'riskFreeSource' => $this->app->rates()->source($uid),
+            'fundNav' => $class->isFund() ? FundNav::fetch($market->cdn, $bundle->instrument, $class) : null,
+            'regime' => $this->app->live()->regime(),
+            'alerts' => $this->app->alerts()->forUser($uid, $code, $this->app->now()),
+            'disclosures' => $disclosures,
+            'since' => date('Y-m-d', $this->app->now() - 10 * 86400),
+            'usd' => $usd,
+            'usdLink' => Sensitivity::versus($bundle->history->dates, $bundle->history->close, $usd),
             'nav' => 'stock', 'tour' => true,
         ]);
     }

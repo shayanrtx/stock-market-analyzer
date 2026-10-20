@@ -5,7 +5,10 @@
  *  @var list<array> $fara    selected indices of farabourse
  *  @var array<string, float> $index  TEDPIX history
  *  @var list<array> $effects index effect of top symbols
- *  @var list<array{symbol: string, industry: string, change: float, value: float}> $watch */
+ *  @var list<array{symbol: string, industry: string, change: float, value: float}> $watch
+ *  @var array{rate: float, bills: list<array>}|null $treasury treasury bill yields
+ *  @var array<string, float> $usd free-market dollar (rial) by date
+ *  @var \Sabadgardan\Analysis\MarketRegime|null $regime primary trend of the market */
 use Sabadgardan\Market\Field;
 use Sabadgardan\View\Charts;
 use Sabadgardan\View\View;
@@ -15,21 +18,44 @@ if ($error) {
         . $v->e($error) . '</p>' . ($isAdmin ? '<div class="actions"><a class="btn secondary" href="' . $v->url('admin/health') . '">بررسی سلامت سامانه</a></div>' : '') . '</section>';
     return;
 }
+// [label, value html, sub html, help key]
 $tiles = [];
-foreach (array_slice($bourse, 0, 5) as $i) {
-    $tiles[] = [trim((string) Field::get($i, 'lVal30', '')), Field::float($i, 'xDrNivJIdx004'), Field::float($i, 'xVarIdxJRfV')];
+foreach (array_slice($bourse, 0, 4) as $k => $i) {
+    $tiles[] = [$v->e(trim((string) Field::get($i, 'lVal30', ''))), $v->num(Field::float($i, 'xDrNivJIdx004')), $v->pct(Field::float($i, 'xVarIdxJRfV'), 2),
+                $k === 0 ? 'indices' : ''];   // the tour explains the indices once
 }
 foreach (array_slice($fara, 0, 1) as $i) {
     $name = trim((string) Field::get($i, 'lVal30', ''));
-    $tiles[] = [str_contains($name, 'فرابورس') ? $name : 'فرابورس — ' . $name, Field::float($i, 'xDrNivJIdx004'), Field::float($i, 'xVarIdxJRfV')];
+    $tiles[] = [$v->e(str_contains($name, 'فرابورس') ? $name : 'فرابورس — ' . $name), $v->num(Field::float($i, 'xDrNivJIdx004')),
+                $v->pct(Field::float($i, 'xVarIdxJRfV'), 2), ''];
+}
+if (count($usd) >= 2) {
+    $last = array_slice($usd, -2, 2, true);
+    [$prev, $now] = array_values($last);
+    $tiles[] = ['دلار آزاد', $v->num($now / 10) . '<small>تومان</small>',
+                $v->pct(($now / $prev - 1) * 100, 2) . ' <span class="faint">' . $v->e($v->jdate((string) array_key_last($last))) . '</span>', 'usd_rate'];
+}
+if ($treasury) {
+    $tiles[] = ['بازده اسناد خزانه', $v->pct($treasury['rate'] * 100, 1, false, false),
+                'سالانه · میانه‌ی ' . $v->num(count($treasury['bills'])) . ' اخزا', 'treasury_yield'];
 }
 ?>
 <div class="page-head"><div class="sub"><?= $v->now() ?> · شاخص‌ها و دیده‌بان هر چند دقیقه به‌روز می‌شوند</div></div>
-<section class="kpis" style="--cols:<?= View::kpiColumns(count($tiles)) ?>" data-help="indices">
-  <?php foreach ($tiles as [$name, $value, $chg]): ?>
-    <div class="kpi"><div class="label"><?= $v->e($name) ?></div><div class="value"><?= $v->num($value) ?></div><div class="sub"><?= $v->pct($chg, 2) ?></div></div>
+<section class="kpis" style="--cols:<?= View::kpiColumns(count($tiles)) ?>">
+  <?php foreach ($tiles as [$label, $value, $sub, $help]): ?>
+    <div class="kpi"<?= $help ? ' data-help="' . $help . '"' : '' ?>><div class="label"><?= $label ?> <?= $help && $help !== 'indices' ? $v->help($help) : '' ?></div><div class="value"><?= $value ?></div><div class="sub"><?= $sub ?></div></div>
   <?php endforeach; ?>
 </section>
+
+<?php if ($regime): ?>
+  <section class="card s12 regime <?= $regime->tone() ?>" data-help="market_regime">
+    <div class="regime-row">
+      <div><span class="faint">روند اولیه‌ی بازار <?= $v->help('market_regime') ?></span><br><span class="pill <?= $regime->tone() ?> lg"><?= $v->e($regime->label()) ?></span></div>
+      <div class="grow"><p><?= $v->e($regime->summary()) ?></p>
+        <p class="faint"><?= $v->e(implode(' · ', $regime->reasons)) ?></p></div>
+    </div>
+  </section>
+<?php endif; ?>
 
 <?php
 echo $v->card('شاخص کل بورس', $index ? $v->chart(Charts::indexLine($index), 'mid') : '<div class="empty">تاریخچه‌ی شاخص در دسترس نیست.</div>',

@@ -164,6 +164,36 @@ final class NotificationService
         return $sent;
     }
 
+    /**
+     * Plain text to every linked chat of a user: price alerts, announcements, password reset links.
+     * ``$capped`` counts it against the daily cap (not for a reset link the user asked for).
+     * Returns the number of messages delivered.
+     */
+    public function sendText(int $userId, string $text, bool $capped = true): int
+    {
+        if ($capped && $this->sentToday($userId) >= self::DAILY_CAP) {
+            return 0;
+        }
+        $sent = 0;
+        foreach ($this->channels($userId) as $ch) {
+            $m = $this->messengers[$ch['channel']] ?? null;
+            if (!$m || !(int) $ch['enabled']) {
+                continue;
+            }
+            $error = '';
+            try {
+                $m->sendMessage((string) $ch['chat_id'], $text);
+                $sent++;
+            } catch (NotifyException $e) {
+                $error = $e->getMessage();
+            }
+            $this->db->insert('notifications', ['user_id' => $userId, 'signal_id' => null, 'channel' => $ch['channel'],
+                                                'status' => $error === '' ? 'sent' : 'failed',
+                                                'error' => mb_substr($error, 0, 255), 'created_at' => time()]);
+        }
+        return $sent;
+    }
+
     /** Sends a test message to all of a user's linked channels; returns errors by channel. */
     public function test(int $userId): array
     {
@@ -193,9 +223,13 @@ final class NotificationService
         if ($signal->side === Signal::BUY && ($signal->probability ?? 0) < $min) {
             return false;
         }
-        $today = (int) $this->db->value("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND status = 'sent' AND created_at > ?",
+        return $this->sentToday($userId) < self::DAILY_CAP;
+    }
+
+    private function sentToday(int $userId): int
+    {
+        return (int) $this->db->value("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND status = 'sent' AND created_at > ?",
             [$userId, time() - 86400]);
-        return $today < self::DAILY_CAP;
     }
 
     private function safeSend(Messenger $m, string $chatId, string $text): void

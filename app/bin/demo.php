@@ -132,7 +132,7 @@ foreach ($txs as $t) {
 }
 echo count($txs), " transactions\n";
 
-foreach (['فارس', 'پارسان', 'کچاد', 'شبندر', 'تاپیکو', 'حکشتی', 'مارون', 'اهرم', 'اخزا۴۱۲'] as $symbol) {
+foreach (['فارس', 'پارسان', 'کچاد', 'شبندر', 'تاپیکو', 'حکشتی', 'مارون', 'اهرم', 'اخزا4024'] as $symbol) {
     $inst = $resolve($symbol);
     $repo->watch($uid, $inst->insCode, $inst->symbol);
 }

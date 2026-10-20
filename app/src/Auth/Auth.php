@@ -61,6 +61,12 @@ final class Auth
         return $count >= self::MAX_ATTEMPTS;
     }
 
+    /** Counts toward the per-IP throttle: failed logins, reset-code requests and wrong reset codes. */
+    public function recordFailure(string $ip, string $username): void
+    {
+        $this->db->insert('login_attempts', ['ip' => $ip, 'username' => mb_substr($username, 0, 100), 'attempted_at' => time()]);
+    }
+
     /** @return string|null error message, or null on success */
     public function attempt(string $username, string $password, string $ip): ?string
     {
@@ -69,8 +75,7 @@ final class Auth
         }
         $row = $this->db->one('SELECT id, password_hash, status FROM users WHERE username = ?', [self::normalizeUsername($username)]);
         if (!$row || !password_verify($password, (string) $row['password_hash'])) {
-            $this->db->insert('login_attempts', ['ip' => $ip, 'username' => mb_substr($username, 0, 100),
-                                                 'attempted_at' => time()]);
+            $this->recordFailure($ip, $username);
             return 'نام کاربری یا رمز عبور اشتباه است.';
         }
         if ($row['status'] === self::PENDING) {

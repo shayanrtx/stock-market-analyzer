@@ -28,7 +28,7 @@ final class ErrorController extends Controller
 
     public function server(Request $q, \Throwable $e): Response
     {
-        $log = $this->app->root . '/storage/logs/error.log';
+        $log = $this->app->storagePath('logs/error.log');
         @mkdir(dirname($log), 0775, true);
         @file_put_contents($log, sprintf("[%s] %s %s\n%s\n\n", date('Y-m-d H:i:s'), $q->method, $q->path, $e), FILE_APPEND);
         $detail = $this->app->config->get('debug') ? $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine()

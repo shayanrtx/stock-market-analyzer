@@ -35,10 +35,12 @@ final class Settings
     public const USER_DEFAULTS = [
         'inflation_annual' => '0.35',
         'risk_free_annual' => '0.30',
+        'risk_free_auto' => '1',           // follow treasury-bill yields (Market\Rates); the figure above is the fallback
         'max_position_weight' => '25',
         'notify_buy_signals' => '1',
         'notify_sell_signals' => '1',
         'notify_min_probability' => '0.55',
+        'notify_disclosures' => '1',       // important announcements of held and watched symbols
     ];
 
     /** @var array<int, array<string, string>> */

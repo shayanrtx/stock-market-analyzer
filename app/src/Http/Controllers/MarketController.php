@@ -16,7 +16,7 @@ final class MarketController extends Controller
     {
         $market = $this->app->market();
         $data = ['title' => 'نمای بازار', 'nav' => 'market', 'tour' => true, 'error' => null, 'bourse' => [], 'fara' => [],
-                 'index' => [], 'watch' => [], 'effects' => []];
+                 'index' => [], 'watch' => [], 'effects' => [], 'treasury' => null, 'usd' => [], 'regime' => null];
         try {
             $data['bourse'] = $market->cdn->indices(TsetmcClient::FLOW_BOURSE);
         } catch (MarketException $e) {
@@ -28,6 +28,9 @@ final class MarketController extends Controller
         } catch (MarketException) {
         }
         $data['index'] = $market->benchmark();
+        $data['treasury'] = $this->app->rates()->treasury();
+        $data['regime'] = $this->app->live()->regime();
+        $data['usd'] = $market->usd();
         try {
             $data['effects'] = $market->cdn->indexEffect(TsetmcClient::FLOW_BOURSE, 10);
         } catch (MarketException) {

@@ -33,16 +33,19 @@ final class CronController extends Controller
     public static function runJobs(\Sabadgardan\App $app, bool $record = true): array
     {
         @set_time_limit(120);
-        $result = ['live' => null, 'linked' => 0, 'errors' => []];
+        $result = ['live' => null, 'linked' => 0, 'backup' => null, 'errors' => []];
         $jobs = [
             'live' => static fn () => $app->live()->tick(),
             'linked' => static fn () => $app->notifier()->pollUpdates(),
+            'backup' => static fn () => $app->backup()->due(time()) ? $app->backup()->create(time()) : null,
         ];
         if (random_int(1, 60) === 1) {  // occasional housekeeping
             $jobs['housekeeping'] = static function () use ($app): bool {
                 $app->cache()->prune();
                 $app->audit()->prune();
                 $app->db()->run('DELETE FROM login_attempts WHERE attempted_at < ?', [time() - 86400]);
+                $app->db()->run('DELETE FROM password_resets WHERE expires_at < ?', [time() - 7 * 86400]);
+                (new \Sabadgardan\Alerts\DisclosureWatch($app->db(), $app->market(), $app->cache()))->prune(time());
                 return true;
             };
         }

@@ -39,6 +39,8 @@ final class App
     private ?Transport $transport = null;
     /** @var null|\Closure(): int */
     private ?\Closure $clock = null;
+    /** @var array<string, float>|null */
+    private ?array $multipliers = null;
 
     public function __construct(public readonly string $root, public readonly Config $config)
     {
@@ -56,11 +58,35 @@ final class App
         return $this;
     }
 
-    /** Simulated time for the live monitor (tests, bin/demo.php). */
+    private ?string $storage = null;
+
+    /** Writable runtime directory (cache, logs, lock, backups): storage/ unless redirected (tests). */
+    public function storagePath(string $relative = ''): string
+    {
+        $base = $this->storage ?? $this->root . '/storage';
+        return $relative === '' ? $base : $base . '/' . ltrim($relative, '/');
+    }
+
+    public function withStorage(string $dir): self
+    {
+        foreach (['', 'cache', 'logs', 'backups'] as $sub) {
+            @mkdir(rtrim("$dir/$sub", '/'), 0775, true);
+        }
+        $this->storage = $dir;
+        return $this;
+    }
+
+    /** Simulated time for the live monitor and date-relative views (tests, bin/demo.php). */
     public function withClock(callable $clock): self
     {
         $this->clock = \Closure::fromCallable($clock);
         return $this;
+    }
+
+    /** Current Unix time, simulated when a clock is set. */
+    public function now(): int
+    {
+        return $this->clock ? ($this->clock)() : time();
     }
 
     public function installed(): bool
@@ -108,7 +134,7 @@ final class App
 
     public function cache(): Cache
     {
-        return $this->make('cache', fn () => new Cache($this->root . '/storage/cache'));
+        return $this->make('cache', fn () => new Cache($this->storagePath('cache')));
     }
 
     public function market(): MarketData
@@ -130,7 +156,12 @@ final class App
         $retries = (int) $this->config->get('market.max_retries');
         $cdn = new TsetmcClient($transport, $cache, $timeout, $retries);
         $gw = new GatewayClient($transport, $cache, $timeout, 1);
-        return new MarketData($cdn, $gw, $this->db());
+        return new MarketData($cdn, $gw, $this->db(), new \Sabadgardan\Market\TgjuClient($transport, $cache, $timeout, 1));
+    }
+
+    public function rates(): \Sabadgardan\Market\Rates
+    {
+        return $this->make('rates', fn () => new \Sabadgardan\Market\Rates($this->market(), $this->settings(), $this->cache(), $this->clock));
     }
 
     public function portfolios(): PortfolioRepository
@@ -140,7 +171,14 @@ final class App
 
     public function portfolioService(): PortfolioService
     {
-        return $this->make('portfolioService', fn () => new PortfolioService($this->portfolios(), $this->market(), $this->settings()));
+        return $this->make('portfolioService', fn () => new PortfolioService($this->portfolios(), $this->market(), $this->settings(),
+            $this->rates(), $this->factorMultipliers()));
+    }
+
+    /** @return array<string, float> calibrated factor multipliers from config/weights.json, or [] */
+    public function factorMultipliers(): array
+    {
+        return $this->multipliers ??= \Sabadgardan\Analysis\Potential\PotentialAnalyzer::loadMultipliers($this->root . '/config/weights.json');
     }
 
     public function notifier(): NotificationService
@@ -155,8 +193,24 @@ final class App
     public function live(): LiveMonitor
     {
         return $this->make('live', fn () => new LiveMonitor($this->db(), $this->market(), $this->portfolios(), $this->settings(),
-            $this->cache(), $this->notifier(), $this->root . '/storage/live.lock', (int) $this->config->get('live.interval'),
-            $this->clock));
+            $this->cache(), $this->notifier(), $this->storagePath('live.lock'), (int) $this->config->get('live.interval'),
+            $this->clock, null, $this->rates(), $this->alerts(),
+            new \Sabadgardan\Alerts\DisclosureWatch($this->db(), $this->market(), $this->cache()), $this->factorMultipliers()));
+    }
+
+    public function backup(): \Sabadgardan\Core\Backup
+    {
+        return $this->make('backup', fn () => new \Sabadgardan\Core\Backup($this->db(), $this->storagePath('backups')));
+    }
+
+    public function passwordReset(): \Sabadgardan\Auth\PasswordReset
+    {
+        return $this->make('password_reset', fn () => new \Sabadgardan\Auth\PasswordReset($this->db(), $this->notifier()));
+    }
+
+    public function alerts(): \Sabadgardan\Alerts\PriceAlerts
+    {
+        return $this->make('alerts', fn () => new \Sabadgardan\Alerts\PriceAlerts($this->db()));
     }
 
     public function view(Request $request): View
@@ -174,6 +228,10 @@ final class App
         // Public
         $r->get('/login', fn ($q) => $c(C\AuthController::class)->loginForm($q), false);
         $r->post('/login', fn ($q) => $c(C\AuthController::class)->login($q), false);
+        $r->get('/forgot', fn ($q) => $c(C\AuthController::class)->forgotForm($q), false);
+        $r->post('/forgot', fn ($q) => $c(C\AuthController::class)->forgot($q), false);
+        $r->get('/reset', fn ($q) => $c(C\AuthController::class)->resetForm($q), false);
+        $r->post('/reset', fn ($q) => $c(C\AuthController::class)->reset($q), false);
         $r->get('/register', fn ($q) => $c(C\AuthController::class)->registerForm($q), false);
         $r->post('/register', fn ($q) => $c(C\AuthController::class)->register($q), false);
         $r->post('/logout', fn ($q) => $c(C\AuthController::class)->logout($q));
@@ -200,6 +258,8 @@ final class App
         $r->get('/watchlist/analysis', fn ($q) => $c(C\WatchlistController::class)->analysis($q));
         $r->post('/watchlist', fn ($q) => $c(C\WatchlistController::class)->add($q));
         $r->post('/watchlist/{code}/delete', fn ($q) => $c(C\WatchlistController::class)->remove($q));
+        $r->post('/alerts', fn ($q) => $c(C\AlertController::class)->create($q));
+        $r->post('/alerts/{id}/delete', fn ($q) => $c(C\AlertController::class)->delete($q));
         $r->get('/live', fn ($q) => $c(C\LiveController::class)->show($q));
         $r->get('/signals', fn ($q) => $c(C\LiveController::class)->signals($q));
 
@@ -230,6 +290,8 @@ final class App
         $r->get('/admin/audit', fn ($q) => $c(C\AdminController::class)->auditLog($q));
         $r->get('/admin/health', fn ($q) => $c(C\AdminController::class)->health($q));
         $r->post('/admin/health/cron', fn ($q) => $c(C\AdminController::class)->testCron($q));
+        $r->post('/admin/backups', fn ($q) => $c(C\AdminController::class)->createBackup($q));
+        $r->get('/admin/backups/{name}', fn ($q) => $c(C\AdminController::class)->downloadBackup($q));
         return $r;
     }
 

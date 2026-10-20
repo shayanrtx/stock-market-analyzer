@@ -218,7 +218,9 @@ final class AdminController extends Controller
             ['نسخه‌ی PHP سایت', PHP_VERSION, PHP_VERSION_ID >= 80100],
             ['افزونه‌ی cURL', extension_loaded('curl') ? 'فعال' : 'غیرفعال', extension_loaded('curl')],
             ['افزونه‌ی GD (تصویر سیگنال)', function_exists('imagettftext') ? 'فعال' : 'غیرفعال', function_exists('imagettftext')],
-            ['پوشه‌ی storage قابل نوشتن', is_writable($this->app->root . '/storage') ? 'بله' : 'خیر', is_writable($this->app->root . '/storage')],
+            ['پوشه‌ی storage قابل نوشتن', is_writable($this->app->storagePath()) ? 'بله' : 'خیر', is_writable($this->app->storagePath())],
+            ['وزن‌های کالیبره‌ی عامل‌ها (config/weights.json)', ($m = $this->app->factorMultipliers())
+                ? 'فعال: ' . count(array_filter($m, static fn ($x) => abs($x - 1) > 1e-9)) . ' عامل با وزن تغییریافته' : 'ندارد؛ وزن‌های پیش‌فرض', true],
         ];
         $market = $this->app->uncachedMarket();
         $probe = function (string $name, callable $fn, array $fields) use (&$checks): void {
@@ -266,8 +268,38 @@ final class AdminController extends Controller
             $probe('دیده‌بان رسمی (tse.ir)', fn () => $market->gateway->marketWatch('Cash'),
                 ['instrumentName', ['closingPricePercent', 'closingPriceChangePercent', 'closingPrice'], 'yesterdayPrice', 'tradeValue']);
         }
+        if ($code !== '') {
+            $probe('پیام‌های ناظر', fn () => $cdn->messages($code), ['dEven', 'hEven', 'tseTitle']);
+            $probe('اطلاعیه‌های کدال', fn () => $cdn->announcements($code, 5), ['title', ['publishDateTime', 'sentDateTime'], 'url']);
+        }
+        $fundCode = '';
+        try {
+            $fundCode = $cdn->resolve('اهرم')->insCode;
+        } catch (MarketException) {
+        }
+        if ($fundCode !== '') {
+            $probe('NAV صندوق (اهرم)', fn () => [$cdn->etf($fundCode)], [['navRed', 'pRedTran'], ['navSub', 'pSubTran']]);
+        }
+        $probe('فهرست صندوق‌ها (درآمد ثابت)', fn () => $cdn->funds(4), ['mfName', 'navRed', 'day365Return']);
+        $probe('اسناد خزانه (نرخ بدون ریسک)', function () {
+            $t = \Sabadgardan\Market\TreasuryYield::fromMarket($this->app->uncachedMarket(), date('Y-m-d'));
+            if (!$t) {
+                throw new MarketException('هیچ اخزای معامله‌شده با ۶۰ تا ۷۳۰ روز تا سررسید پیدا نشد');
+            }
+            return [['rate' => $t['rate'], 'bills' => count($t['bills'])]];
+        }, ['rate']);
+        if ($market->tgju) {
+            $probe('دلار آزاد (tgju.org)', function () use ($market) {
+                $h = $market->tgju->history();
+                if (!$h) {
+                    throw new MarketException('پاسخ tgju داده‌ای نداشت');
+                }
+                return [['points' => count($h), 'last' => end($h)]];
+            }, ['points', 'last']);
+        }
         return $this->view($q, 'admin/health', ['title' => 'سلامت سامانه', 'nav' => 'admin', 'env' => $env, 'checks' => $checks,
-            'migration' => (new Migrations($this->app->db()))->current(), 'cron' => $this->cronDiagnosis()]);
+            'migration' => (new Migrations($this->app->db()))->current(), 'cron' => $this->cronDiagnosis(),
+            'backups' => $this->app->backup()->list(), 'dbDriver' => $this->app->db()->driver]);
     }
 
     /**
@@ -279,7 +311,7 @@ final class AdminController extends Controller
     private function cronDiagnosis(): array
     {
         $s = $this->app->settings();
-        $logs = $this->app->root . '/storage/logs';
+        $logs = $this->app->storagePath('logs');
         $beat = @file($logs . '/cron-heartbeat.txt', FILE_IGNORE_NEW_LINES) ?: [];
         $beatAt = isset($beat[0]) ? (int) $beat[0] : 0;
         $beatPhp = $beat[1] ?? '';
@@ -303,6 +335,35 @@ final class AdminController extends Controller
             'command' => PhpBinary::recommended() . ' ' . $this->app->root . '/bin/cron.php',
             'log' => array_slice($log, -15),
         ];
+    }
+
+    public function createBackup(Request $q): Response
+    {
+        if ($r = $this->guard($q)) {
+            return $r;
+        }
+        try {
+            $name = $this->app->backup()->create(time());
+            $this->audit($q, 'backup_create', $name);
+            $this->flash('success', "پشتیبان «{$name}» ساخته شد.");
+        } catch (\Throwable $e) {
+            $this->flash('error', 'پشتیبان‌گیری انجام نشد: ' . $e->getMessage());
+        }
+        return $this->redirect($q, '/admin/health');
+    }
+
+    public function downloadBackup(Request $q): Response
+    {
+        if ($r = $this->guard($q)) {
+            return $r;
+        }
+        $name = $q->param('name');
+        $path = $this->app->backup()->path($name);
+        if ($path === null) {
+            return (new ErrorController($this->app))->notFound($q);
+        }
+        $this->audit($q, 'backup_download', $name);
+        return Response::download($path, $name, str_ends_with($name, '.gz') ? 'application/gzip' : 'application/octet-stream');
     }
 
     /** Runs the cron jobs once from the browser and shows what happened (not recorded as a cron run). */

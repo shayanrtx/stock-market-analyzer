@@ -106,7 +106,7 @@ class TsetmcClient
         $attempt = 0;
         $errors = [];
         while ($pending) {
-            $results = $this->transport->fetchMany(array_values($pending), self::HEADERS, $this->timeout);
+            $results = $this->transport->fetchMany(array_values($pending), $this->headers(), $this->timeout);
             $retry = [];
             foreach ($pending as $key => $url) {
                 $res = $results[$url] ?? new HttpResult(0, '', 'no response');
@@ -138,7 +138,13 @@ class TsetmcClient
         return $this->baseUrl . '/' . ltrim($path, '/');
     }
 
-    private function describe(HttpResult $res): string
+    /** @return array<string, string> */
+    protected function headers(): array
+    {
+        return self::HEADERS;
+    }
+
+    protected function describe(HttpResult $res): string
     {
         if ($res->status === 0) {
             return 'اتصال به سرور بورس برقرار نشد' . ($res->error ? " ({$res->error})" : '');
@@ -271,5 +277,36 @@ class TsetmcClient
     public function clientTypeAll(): array
     {
         return Field::list($this->get('ClientType/GetClientTypeAll', self::TTL_INTRADAY), 'clientTypeAllDto');
+    }
+
+    // ------------------------------------------------- disclosures and funds
+
+    /** Supervisor messages (پیام ناظر): dEven, hEven, tseTitle, tseDesc. @return list<array<string, mixed>> */
+    public function messages(string $insCode): array
+    {
+        return Field::list($this->get("Msg/GetMsgByInsCode/$insCode", self::TTL_INTRADAY), 'msg');
+    }
+
+    /** Codal announcements of a symbol, newest first. @return list<array<string, mixed>> */
+    public function announcements(string $insCode, int $top = 20): array
+    {
+        return Field::list($this->get("Codal/GetPreparedDataByInsCode/$top/$insCode", self::TTL_INTRADAY), 'preparedData');
+    }
+
+    /** ETF record with the published NAVs (works for funds only). @return array<string, mixed> */
+    public function etf(string $insCode): array
+    {
+        return (array) Field::get($this->get("Fund/GetETFByInsCode/$insCode", self::TTL_INTRADAY), 'etf', []);
+    }
+
+    /**
+     * Fund registry by type (4 fixed income, 5 commodity, 6 equity, 7 mixed, 18 real estate,
+     * 21 sector, 22 leveraged, 23 index): mfName, navRed, navSub, navStat, netAsset, dayNReturn, portfolio*.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function funds(int $type): array
+    {
+        return Field::list($this->get("Fund/GetFunds/$type", self::TTL_DAILY), 'funds');
     }
 }

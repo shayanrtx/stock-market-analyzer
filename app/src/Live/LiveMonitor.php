@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Sabadgardan\Live;
 
+use Sabadgardan\Alerts\DisclosureWatch;
+use Sabadgardan\Alerts\PriceAlerts;
 use Sabadgardan\Analysis\Indicators;
+use Sabadgardan\Analysis\MarketRegime;
 use Sabadgardan\Analysis\MoneyFlow;
 use Sabadgardan\Analysis\Potential\PotentialAnalyzer;
 use Sabadgardan\Analysis\Stats;
@@ -13,6 +16,7 @@ use Sabadgardan\Core\Database;
 use Sabadgardan\Core\Settings;
 use Sabadgardan\Live\Rules\Rule;
 use Sabadgardan\Live\Rules\RuleRegistry;
+use Sabadgardan\Market\Disclosures;
 use Sabadgardan\Market\Field;
 use Sabadgardan\Market\MarketData;
 use Sabadgardan\Market\TsetmcClient;
@@ -55,12 +59,16 @@ final class LiveMonitor
         private int $interval = 45,
         ?callable $clock = null,
         private ?array $rules = null,
+        private ?\Sabadgardan\Market\Rates $rates = null,
+        private ?PriceAlerts $alerts = null,
+        private ?DisclosureWatch $disclosures = null,
+        private array $multipliers = [],
     ) {
         $this->clock = $clock ?? 'time';
         $this->rules ??= RuleRegistry::defaults();
     }
 
-    /** @return array{ran: bool, phase: string, insights: int, signals: int, pending_contexts: int, reason?: string} */
+    /** @return array{ran: bool, phase: string, insights: int, signals: int, pending_contexts: int, alerts?: int, announcements?: int, reason?: string} */
     public function tick(bool $force = false): array
     {
         $now = ($this->clock)();
@@ -131,8 +139,72 @@ final class LiveMonitor
                 }
             }
             $insights += $this->marketInsight($now, $day);
+            $alerts = $this->priceAlerts($snapshots, $now);
         }
-        return ['ran' => true, 'phase' => $phase, 'insights' => $insights, 'signals' => $signals, 'pending_contexts' => $pending];
+        // Announcements arrive at any hour (Codal publishes into the evening).
+        $announcements = $this->announcements($monitored, $now, $day);
+        return ['ran' => true, 'phase' => $phase, 'insights' => $insights + $announcements, 'signals' => $signals,
+                'alerts' => $alerts ?? 0, 'announcements' => $announcements, 'pending_contexts' => $pending];
+    }
+
+    /**
+     * Fires the price alerts the latest trades reached and sends them to their owners. Symbols with
+     * an alert but outside every watchlist and portfolio get a price-only snapshot.
+     *
+     * @param array<string, Snapshot> $snapshots
+     */
+    private function priceAlerts(array $snapshots, int $now): int
+    {
+        $wanted = $this->alerts?->activeSymbols() ?? [];
+        if (!$wanted) {
+            return 0;
+        }
+        $snaps = array_intersect_key($snapshots, $wanted);
+        $missing = array_diff_key($wanted, $snapshots);
+        if ($missing) {
+            $paths = [];
+            foreach (array_keys($missing) as $code) {
+                $paths[(string) $code] = "ClosingPrice/GetClosingPriceInfo/$code";
+            }
+            foreach ($this->market->cdn->tryMany($paths, TsetmcClient::TTL_LIVE) as $code => $data) {
+                $price = (array) Field::get($data ?? [], 'closingPriceInfo', []);
+                if ($price) {
+                    $snaps[(string) $code] = Snapshot::fromApi((string) $code, $missing[$code], $now, $price, [], []);
+                }
+            }
+        }
+        $fired = $this->alerts->trigger($snaps, $now);
+        foreach ($fired as $a) {
+            $this->notifier?->sendText((int) $a['user_id'], PriceAlerts::message($a, $this->settings->system('site_name')));
+        }
+        return count($fired);
+    }
+
+    /**
+     * New important announcements of monitored symbols: an insight in the live feed and a message
+     * to holders and watchers who haven't turned them off.
+     *
+     * @param array<string, array{symbol: string, holders: list<int>, watchers: list<int>}> $monitored
+     */
+    private function announcements(array $monitored, int $now, string $day): int
+    {
+        if (!$this->disclosures || !$monitored) {
+            return 0;
+        }
+        $count = 0;
+        foreach ($this->disclosures->check(array_map('strval', array_keys($monitored)), $now) as ['ins_code' => $code, 'item' => $item]) {
+            $who = $monitored[$code];
+            $this->record(new Insight($now, $code, $who['symbol'], 'disclosure', 0, $item['kind'] === 'halt' ? 3 : 2,
+                'اطلاعیه: ' . Disclosures::KINDS[$item['kind']], $item['title'],
+                ['source' => $item['source'], 'url' => $item['url'], 'at' => $item['at']]), $day);
+            foreach (array_unique([...$who['holders'], ...$who['watchers']]) as $uid) {
+                if ($this->settings->forUser($uid, 'notify_disclosures') !== '0') {
+                    $this->notifier?->sendText($uid, DisclosureWatch::message($who['symbol'], $item, $this->settings->system('site_name')));
+                }
+            }
+            $count++;
+        }
+        return $count;
     }
 
     /**
@@ -158,7 +230,7 @@ final class LiveMonitor
             return $out;
         }
         $analyzer = new PotentialAnalyzer((float) $this->settings->system('inflation_annual'),
-            (float) $this->settings->system('risk_free_annual'));
+            $this->rates?->riskFree(Settings::SYSTEM) ?? (float) $this->settings->system('risk_free_annual'), $this->multipliers);
         foreach ($this->market->bundles($batch, ['history', 'info', 'flow']) as $code => $b) {
             $h = $b->history;
             if ($h->count() < 30) {
@@ -274,7 +346,7 @@ final class LiveMonitor
         if (!$bundle) {
             return 0;
         }
-        $engine = new SignalEngine((float) $this->settings->system('inflation_annual'));
+        $engine = new SignalEngine((float) $this->settings->system('inflation_annual'), $this->regime($now));
         $signal = $engine->evaluate($ctx, $snap, $recent, $bundle->history, (bool) $who['holders']);
         if (!$signal || $this->hasOpenSignal($signal, $now)) {
             return 0;
@@ -290,6 +362,19 @@ final class LiveMonitor
             $this->db->update('signals', ['notified' => $sent], ['id' => $signal->id]);
         }
         return 1;
+    }
+
+    /** Market regime, refreshed every ten minutes (the index history is daily, breadth moves slowly). */
+    public function regime(?int $now = null): MarketRegime
+    {
+        $key = 'regime:' . MarketClock::day($now ?? ($this->clock)());
+        $hit = $this->cache->get($key);
+        if (is_array($hit)) {
+            return MarketRegime::fromArray($hit);
+        }
+        $regime = MarketRegime::fromMarket($this->market);
+        $this->cache->set($key, $regime->toArray(), 600);
+        return $regime;
     }
 
     /**
@@ -381,7 +466,10 @@ final class LiveMonitor
         }
         $phase = $this->phase($now);
         $last = (int) $this->settings->system('live_last_tick');
+        $regime = $this->regime($now);
         return [
+            'regime' => ['state' => $regime->state, 'label' => $regime->label(), 'tone' => $regime->tone(),
+                         'summary' => $regime->summary(), 'reasons' => $regime->reasons],
             'phase' => $phase,
             'phase_label' => MarketClock::LABELS[$phase],
             'clock' => MarketClock::local($now, 'H:i'),

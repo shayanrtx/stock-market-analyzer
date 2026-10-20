@@ -46,7 +46,7 @@ $counts = array_count_values(array_map(static fn ($r) => $r['advice']['action'],
     <tr>
       <td><a href="<?= $v->url('stock', ['ins' => $r['ins_code']]) ?>"><b><?= $v->e($r['symbol']) ?></b></a>
         <?= $v->assetTag($r['class'], $r['class_tone']) ?>
-        <span class="sub"><?= $v->e($r['sector']) ?></span>
+        <span class="sub"><?= $v->e($r['sector']) ?><?php if ($r['premium'] !== null): ?> · حباب <span class="<?= $r['premium'] > \Sabadgardan\Portfolio\Advisor::PREMIUM_HIGH ? 'down' : '' ?>"><?= $v->pct($r['premium'], 1, false) ?></span><?php endif; ?></span>
         <?php if ($r['queue']): ?><span class="pill <?= $r['queue'] === 'buy' ? 'up' : 'down' ?>" style="margin-top:4px"><?= $r['queue'] === 'buy' ? 'صف خرید' : 'صف فروش' ?></span><?php endif; ?></td>
       <td><span class="pill <?= $adv['action'] ?>"><?= $v->e($adv['label']) ?></span></td>
       <td><?= $v->pct($r['weight'], 1, false, false) ?> ← <b><?= $v->pct($adv['target_weight'], 1, false, false) ?></b>
@@ -81,7 +81,7 @@ $conc = $a['concentration'];
 $tiles = [
     ['volatility', 'نوسان سالانه', $v->pct($m['volatility_annual_pct'], 1, false, false), 'بیشترین افت ' . $v->pct($m['max_drawdown_pct'], 1)],
     ['max_drawdown', 'افت فعلی از سقف', $v->pct($m['current_drawdown_pct'], 1), 'بیشترین افت دوره ' . $v->pct($m['max_drawdown_pct'], 1)],
-    ['sharpe', 'نسبت شارپ', $v->num($m['sharpe'], 2), 'سورتینو ' . $v->num($m['sortino'], 2) . ' · نرخ بدون ریسک ' . $v->pct($m['risk_free_pct'], 0, false, false)],
+    ['sharpe', 'نسبت شارپ', $v->num($m['sharpe'], 2), 'سورتینو ' . $v->num($m['sortino'], 2) . ' · نرخ بدون ریسک ' . $v->pct($m['risk_free_pct'], 1, false, false)],
     ['beta', 'بتا نسبت به شاخص', $v->num($m['beta'] ?? null, 2), isset($m['excess_vs_benchmark_pct']) ? 'بازده مازاد بر شاخص ' . $v->pct($m['excess_vs_benchmark_pct'], 1) : 'داده‌ی شاخص در دسترس نیست'],
     ['var', 'VaR روزانه ۹۵٪', $v->money($var), $v->pct(-$m['var95_1d_pct'], 2) . ' · CVaR ' . $v->pct(isset($m['cvar95_1d_pct']) ? -$m['cvar95_1d_pct'] : null, 2)],
     ['effective_positions', 'تعداد مؤثر نمادها', $v->num($conc['effective_positions'] ?? null, 1), 'از ' . count($a['positions']) . ' نماد · HHI ' . $v->num(($conc['hhi'] ?? 0) * 10000, 0)],
@@ -107,12 +107,16 @@ echo $v->card('ترکیب صنعت', $v->chart(Charts::hbar($sectors, Charts::AC
 
 if ($risk && $risk['risk_contribution']) {
     $rw = [];
+    // Risk-parity weights split the invested part of the portfolio, so they are scaled to it.
+    $invested = array_sum(array_map(static fn ($r) => isset($risk['risk_parity'][$r['symbol']]) ? $r['weight'] : 0, $a['positions']));
     foreach ($a['positions'] as $r) {
         if (isset($risk['risk_contribution'][$r['symbol']])) {
-            $rw[] = [$r['symbol'], $r['weight'], $risk['risk_contribution'][$r['symbol']]];
+            $parity = $risk['risk_parity'][$r['symbol']] ?? null;
+            $rw[] = [$r['symbol'], $r['weight'], $risk['risk_contribution'][$r['symbol']], $parity !== null ? $parity * $invested / 100 : null];
         }
     }
-    echo $v->card('وزن در برابر سهم از ریسک', $v->chart(Charts::riskVsWeight($rw), null, max(240, 34 * count($rw) + 60)), 6, 'risk_vs_weight');
+    echo $v->card('وزن در برابر سهم از ریسک', $v->chart(Charts::riskVsWeight($rw), null, max(240, 34 * count($rw) + 60)), 6, 'risk_vs_weight',
+        $risk['risk_parity'] ? 'لوزی: وزنی که سهم ریسک همه را برابر می‌کند' : '');
 }
 if ($risk) {
     $points = array_map(static fn ($r) => ['symbol' => $r['symbol'], 'vol' => $r['volatility_pct'], 'ret' => $r['return_1y_pct'],

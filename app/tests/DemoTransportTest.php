@@ -25,6 +25,22 @@ final class DemoTransportTest extends TestCase
         return $this->get($t, 'Instrument/GetInstrumentSearch/' . rawurlencode($symbol))['instrumentSearch'][0]['insCode'];
     }
 
+    /** bin/demo.php seeds trades and a watchlist by symbol: every one of them must exist in the demo market. */
+    public function testEverySymbolTheDemoSeederUsesExists(): void
+    {
+        $source = (string) file_get_contents(dirname(__DIR__) . '/bin/demo.php');
+        preg_match_all("/\\['([^' ]+)', \\d+, \\d+, '(?:buy|sell)'\\]/u", $source, $trades);
+        preg_match("/foreach \\(\\[([^\\]]+)\\] as \\\$symbol\\)/u", $source, $watch);
+        preg_match_all("/'([^']+)'/u", $watch[1] ?? '', $watched);
+        $symbols = array_unique([...$trades[1], ...$watched[1], 'شتران']);
+        $this->assertTrue(count($symbols) > 15, 'the seeder lists were found');
+        $t = new DemoTransport();
+        foreach ($symbols as $symbol) {
+            $hits = $this->get($t, 'Instrument/GetInstrumentSearch/' . rawurlencode($symbol))['instrumentSearch'];
+            $this->assertTrue(in_array($symbol, array_column($hits, 'lVal18AFC'), true), "«{$symbol}» is not in the demo market");
+        }
+    }
+
     public function testDailyMovesStayWithinThePriceLimit(): void
     {
         $t = new DemoTransport(static fn () => strtotime('2026-10-20 14:00 UTC'));

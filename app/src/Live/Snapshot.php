@@ -30,6 +30,7 @@ final class Snapshot
         public readonly float $sellICount = 0.0,
         public readonly ?float $upperLimit = null,
         public readonly ?float $lowerLimit = null,
+        public readonly ?float $low = null,      // last: snapshots stored before it existed still load
     ) {
     }
 
@@ -47,7 +48,7 @@ final class Snapshot
             $f($priceInfo, 'pDrCotVal') ?: null, $f($priceInfo, 'pClosing') ?: null, $f($priceInfo, 'priceYesterday') ?: null,
             $f($priceInfo, 'priceMax') ?: null, $f($priceInfo, 'qTotTran5J'), $f($priceInfo, 'qTotCap'),
             $f($priceInfo, 'zTotTran'), $book, $f($clientType, 'buy_I_Volume'), $f($clientType, 'buy_CountI'),
-            $f($clientType, 'sell_I_Volume'), $f($clientType, 'sell_CountI'), $upper, $lower);
+            $f($clientType, 'sell_I_Volume'), $f($clientType, 'sell_CountI'), $upper, $lower, $f($priceInfo, 'priceMin') ?: null);
     }
 
     /** @return array<string, mixed> */

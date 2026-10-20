@@ -16,7 +16,8 @@ final class WatchlistController extends Controller
     {
         $items = $this->app->portfolios()->watchlist($this->userId());
         $bundles = $this->app->market()->bundles(array_column($items, 'ins_code'), MarketData::PARTS_PRICE);
-        return $this->view($q, 'watchlist', ['title' => 'دیده‌بان', 'items' => $items, 'bundles' => $bundles, 'nav' => 'watchlist']);
+        return $this->view($q, 'watchlist', ['title' => 'دیده‌بان', 'items' => $items, 'bundles' => $bundles, 'nav' => 'watchlist',
+            'alerts' => $this->app->alerts()->forUser($this->userId(), null, $this->app->now())]);
     }
 
     /** Growth-potential ranking of the watchlist, loaded asynchronously. */
@@ -26,7 +27,8 @@ final class WatchlistController extends Controller
         $items = $this->app->portfolios()->watchlist($uid);
         $market = $this->app->market();
         $settings = $this->app->settings();
-        $analyzer = new PotentialAnalyzer($settings->float($uid, 'inflation_annual'), $settings->float($uid, 'risk_free_annual'));
+        $analyzer = new PotentialAnalyzer($settings->float($uid, 'inflation_annual'), $this->app->rates()->riskFree($uid),
+            $this->app->factorMultipliers());
         $benchmark = $market->benchmark();
         $rows = [];
         foreach ($market->bundles(array_column($items, 'ins_code'), ['history', 'info', 'flow', 'price', 'client']) as $code => $b) {

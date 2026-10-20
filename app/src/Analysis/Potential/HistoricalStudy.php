@@ -215,8 +215,15 @@ final class HistoricalStudy
         $total = count($days);
         $timeouts = count($timeoutReturns);
         $expectancy = ($wins * $targetPct - $losses * $stopPct + array_sum($timeoutReturns)) / $total;
+        // Sessions a few days apart share most of their future path, so they are not independent
+        // trials: count one observation per SPACING-session block when judging how sure the rate is.
+        $effective = count(array_unique(array_map(static fn ($i) => intdiv($i, self::SPACING), $days)));
+        $ci = Stats::wilson((int) round($wins / $total * $effective), $effective);
         return [
             'samples' => $total,
+            'effective_samples' => $effective,
+            'win_low' => $ci['low'],
+            'win_high' => $ci['high'],
             'conditioned' => $conditioned,
             'horizon_days' => $horizon,
             'win_rate' => $wins / $total,

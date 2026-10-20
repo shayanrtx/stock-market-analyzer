@@ -3,7 +3,9 @@
  *  @var list<array{0: string, 1: string, 2: bool}> $env
  *  @var list<array{0: string, 1: string, 2: bool, 3: float}> $checks  API probes: name, result, ok, ms
  *  @var int $migration
- *  @var array<string, mixed> $cron  AdminController::cronDiagnosis() */
+ *  @var array<string, mixed> $cron  AdminController::cronDiagnosis()
+ *  @var list<array{name: string, size: int, time: int}> $backups newest first
+ *  @var string $dbDriver sqlite | mysql */
 $failed = count(array_filter($checks, static fn ($c) => !$c[2]));
 $blocked = (bool) array_filter($checks, static fn ($c) => !$c[2] && str_contains($c[1], 'ایران'));
 ?>
@@ -69,3 +71,24 @@ $cronMessages = [
   </tbody>
 </table></div>
 <?= $v->card('سرویس‌های داده‌ی بازار', (string) ob_get_clean(), 8, '', 'فراخوانی واقعی هر سرویس و بررسی فیلدهای مورد نیاز') ?>
+
+<?php ob_start(); ?>
+<p class="muted" style="font-size:13px;margin-top:0">هر روز یک نسخه به‌طور خودکار (با Cron) در <code dir="ltr">storage/backups</code> ساخته و <?= \Sabadgardan\Core\Backup::KEEP ?> نسخه‌ی آخر نگه داشته می‌شود.
+  <?= $dbDriver === 'sqlite' ? 'برای بازگردانی، فایل را از حالت فشرده (gz) خارج کنید و به‌جای فایل پایگاه داده‌ی SQLite بگذارید.' : 'برای بازگردانی، فایل را در phpMyAdmin با Import وارد کنید.' ?>
+  یک نسخه را بیرون از هاست هم نگه دارید.</p>
+<?php if ($backups): ?>
+  <div class="table-wrap"><table>
+    <thead><tr><th>فایل</th><th>زمان</th><th>حجم</th><th></th></tr></thead>
+    <tbody>
+    <?php foreach ($backups as $b): ?>
+      <tr><td dir="ltr" style="text-align:right"><?= $v->e($b['name']) ?></td><td><?= $v->e($v->jdatetime(date('Y-m-d H:i', $b['time']))) ?></td>
+        <td><span class="num"><?= $v->num($b['size'] / 1024, 0) ?></span> <small class="faint">KB</small></td>
+        <td><a class="btn ghost sm" href="<?= $v->url('admin/backups/' . rawurlencode($b['name'])) ?>">دانلود</a></td></tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table></div>
+<?php else: ?>
+  <div class="empty">هنوز پشتیبانی ساخته نشده است.</div>
+<?php endif; ?>
+<form method="post" action="<?= $v->url('admin/backups') ?>" style="margin-top:12px"><?= $v->csrf() ?><button class="btn secondary sm">پشتیبان‌گیری الان</button></form>
+<?= $v->card('پشتیبان پایگاه داده', (string) ob_get_clean(), 12, '', count($backups) . ' نسخه') ?>

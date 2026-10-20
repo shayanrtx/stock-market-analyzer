@@ -362,6 +362,44 @@ final class Charts
         ]);
     }
 
+    /**
+     * Time-weighted growth of the holdings against TEDPIX, both from 100 on the first purchase.
+     *
+     * @param array<string, float> $twr @param array<string, float> $bench
+     */
+    public static function growth(array $twr, array $bench): array
+    {
+        $dates = array_keys($twr);
+        $series = [['name' => 'سبد (بازده زمان‌وزنی)', 'type' => 'line', 'showSymbol' => false,
+                    'data' => array_map(static fn ($v) => round($v, 1), array_values($twr)),
+                    'lineStyle' => ['width' => 2, 'color' => self::ACCENT], 'itemStyle' => ['color' => self::ACCENT],
+                    'areaStyle' => ['color' => 'rgba(37,99,235,.06)']]];
+        if ($bench) {
+            ksort($bench);
+            $keys = array_keys($bench);
+            $j = -1;
+            $base = null;
+            $data = [];
+            foreach ($dates as $d) {
+                while ($j + 1 < count($keys) && $keys[$j + 1] <= $d) {
+                    $j++;
+                }
+                $v = $j >= 0 ? $bench[$keys[$j]] : null;
+                $base ??= $v;
+                $data[] = $v && $base ? round($v / $base * 100, 1) : null;
+            }
+            $series[] = ['name' => 'شاخص کل', 'type' => 'line', 'showSymbol' => false, 'data' => $data,
+                         'lineStyle' => ['width' => 1.4, 'color' => self::MUTED], 'itemStyle' => ['color' => self::MUTED]];
+        }
+        return self::base([
+            'legend' => ['top' => 0, 'textStyle' => ['fontSize' => 11]],
+            'grid' => ['left' => 44, 'right' => 16, 'top' => 32, 'bottom' => 28],
+            'xAxis' => self::axis(self::jdates($dates), ['boundaryGap' => false, 'axisLabel' => ['hideOverlap' => true]]),
+            'yAxis' => self::axis(null, ['type' => 'value', 'scale' => true]),
+            'series' => $series,
+        ]);
+    }
+
     /** @param array<string, float> $equity @param array<string, float>|null $bench @param array<string, float> $dd */
     public static function equityVsBenchmark(array $equity, ?array $bench, array $dd): array
     {
@@ -433,7 +471,7 @@ final class Charts
         ]);
     }
 
-    /** @param list<array{0: string, 1: float, 2: float}> $rows symbol, weight %, risk share % */
+    /** @param list<array{0: string, 1: float, 2: float, 3?: ?float}> $rows symbol, weight %, risk share %, risk-parity weight % */
     public static function riskVsWeight(array $rows): array
     {
         usort($rows, static fn ($a, $b) => $a[2] <=> $b[2]);
@@ -448,6 +486,10 @@ final class Charts
                  'itemStyle' => ['color' => '#cbd5e1', 'borderRadius' => 3]],
                 ['name' => 'سهم از ریسک', 'type' => 'bar', 'data' => array_map(static fn ($r) => round($r[2], 1), $rows),
                  'itemStyle' => ['color' => '#f97316', 'borderRadius' => 3]],
+                ...(array_filter(array_column($rows, 3), static fn ($x) => $x !== null) ? [
+                    ['name' => 'وزن برابری ریسک', 'type' => 'scatter', 'symbol' => 'diamond', 'symbolSize' => 11,
+                     'data' => array_map(static fn ($r) => isset($r[3]) ? round($r[3], 1) : null, $rows),
+                     'itemStyle' => ['color' => '#0f766e'], 'z' => 5]] : []),
             ],
         ]);
     }
@@ -497,6 +539,50 @@ final class Charts
             'yAxis' => self::axis(null, ['type' => 'value', 'name' => 'بازده ۱ سال ٪', 'scale' => true]),
             'series' => [['type' => 'scatter', 'data' => $data, 'symbolSize' => 'fn:bubble',
                           'label' => ['show' => true, 'formatter' => '{b}', 'position' => 'top', 'fontSize' => 10, 'color' => '#374151']]],
+        ]);
+    }
+
+    /**
+     * A symbol and an outside driver (the dollar) rebased to 100 over the same window. The driver
+     * trades on days the exchange is closed, so it is sampled on the symbol's sessions (last known value).
+     *
+     * @param list<string> $dates @param list<float> $close @param array<string, float> $driver
+     */
+    public static function rebased(array $dates, array $close, array $driver, string $name, string $driverName, int $days = 365): array
+    {
+        ksort($driver);
+        $start = date('Y-m-d', strtotime((string) end($dates)) - $days * 86400);
+        $keys = array_keys($driver);
+        $j = -1;
+        $a0 = $b0 = null;
+        $a = $b = $x = [];
+        foreach ($dates as $i => $d) {
+            while ($j + 1 < count($keys) && $keys[$j + 1] <= $d) {
+                $j++;
+            }
+            if ($d < $start || $j < 0 || $close[$i] <= 0) {
+                continue;
+            }
+            $a0 ??= $close[$i];
+            $b0 ??= $driver[$keys[$j]];
+            $x[] = $d;
+            $a[] = round($close[$i] / $a0 * 100, 1);
+            $b[] = round($driver[$keys[$j]] / $b0 * 100, 1);
+        }
+        if (count($x) < 2) {
+            return [];
+        }
+        return self::base([
+            'legend' => ['top' => 0, 'textStyle' => ['fontSize' => 11]],
+            'grid' => ['left' => 44, 'right' => 16, 'top' => 32, 'bottom' => 28],
+            'xAxis' => self::axis(self::jdates($x), ['boundaryGap' => false, 'axisLabel' => ['hideOverlap' => true]]),
+            'yAxis' => self::axis(null, ['type' => 'value', 'scale' => true]),
+            'series' => [
+                ['name' => $name, 'type' => 'line', 'data' => $a, 'showSymbol' => false,
+                 'lineStyle' => ['width' => 2, 'color' => self::ACCENT], 'itemStyle' => ['color' => self::ACCENT]],
+                ['name' => $driverName, 'type' => 'line', 'data' => $b, 'showSymbol' => false,
+                 'lineStyle' => ['width' => 1.6, 'color' => '#d97706'], 'itemStyle' => ['color' => '#d97706']],
+            ],
         ]);
     }
 

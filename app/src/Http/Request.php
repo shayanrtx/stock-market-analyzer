@@ -28,7 +28,10 @@ final class Request
     {
         $uri = (string) parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
         // The app may live in a sub-folder (e.g. /public_html/portfolio): strip the script's directory.
-        $base = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/');
+        // Only trust SCRIPT_NAME when it is the front controller: PHP's built-in server reports a path
+        // with a file extension (a backup download, say) as the script itself.
+        $script = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_NAME'] ?? '/index.php'));
+        $base = basename($script) === 'index.php' ? rtrim(dirname($script), '/') : '';
         $path = $base !== '' && str_starts_with($uri, $base) ? substr($uri, strlen($base)) : $uri;
         $path = '/' . trim(rawurldecode($path), '/');
         if ($path === '/index.php') {

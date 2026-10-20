@@ -7,8 +7,20 @@
  *  @var list<array> $holdings the user's open positions in this symbol
  *  @var array $portfolio      default portfolio (for the transaction drawer)
  *  @var array<string, float> $fees
- *  @var float $riskFree  annual risk-free rate (fraction) */
+ *  @var float $riskFree  annual risk-free rate (fraction)
+ *  @var string $riskFreeSource where the rate comes from
+ *  @var array|null $fundNav   published NAV of a fund (FundNav)
+ *  @var list<array> $disclosures supervisor messages and Codal announcements, newest first
+ *  @var string $since         Y-m-d; important announcements after it are highlighted
+ *  @var array<string, float> $usd free-market dollar by date
+ *  @var array|null $usdLink   beta/correlation to the dollar (Sensitivity::versus)
+ *  @var \Sabadgardan\Analysis\MarketRegime $regime primary trend of the market
+ *  @var list<array> $alerts   the user's price alerts on this symbol */
 use Sabadgardan\Analysis\Potential\Factor;
+use Sabadgardan\Analysis\Sensitivity;
+use Sabadgardan\Analysis\Stats;
+use Sabadgardan\Market\Disclosures;
+use Sabadgardan\Market\FundNav;
 use Sabadgardan\Market\Field;
 use Sabadgardan\Signals\SignalEngine;
 use Sabadgardan\View\Charts;
@@ -53,12 +65,18 @@ $meta = array_unique(array_filter([$b->subSector() ?: ($p->sector ?: $b->sector(
       <?= $v->csrf() ?><input type="hidden" name="ins_code" value="<?= $v->e($inst->insCode) ?>"><input type="hidden" name="back" value="/stock?ins=<?= $v->e(rawurlencode($inst->insCode)) ?>">
       <button class="btn secondary"><?= $v->icon($watched ? 'eye' : 'star', 16) ?><?= $watched ? 'در دیده‌بان' : 'افزودن به دیده‌بان' ?></button>
     </form>
+    <a class="btn secondary" href="#price-alerts"><?= $v->icon('bell', 16) ?>هشدار قیمت<?= array_filter($alerts, static fn ($a) => $a['triggered_at'] === null) ? ' (' . count(array_filter($alerts, static fn ($a) => $a['triggered_at'] === null)) . ')' : '' ?></a>
     <button class="btn" type="button" data-open-drawer data-ins="<?= $v->e($inst->insCode) ?>" data-symbol="<?= $v->e($inst->symbol) ?>" data-type="buy"><?= $v->icon('plus', 16) ?>ثبت معامله</button>
   </div>
 </div>
 
 <?php
-$probText = $p->probabilityUp !== null && $p->analogs ? 'بر پایه‌ی ' . $p->analogs['samples'] . ' موقعیت مشابه' : 'موقعیت مشابه کافی نیست';
+$probText = 'موقعیت مشابه کافی نیست';
+if ($p->probabilityUp !== null && $p->analogs) {
+    // Analog days are spaced apart, so each is close to an independent observation.
+    $ci = Stats::wilson((int) round($p->probabilityUp * $p->analogs['samples']), (int) $p->analogs['samples']);
+    $probText = $p->analogs['samples'] . ' موقعیت مشابه · بازه‌ی ۹۵٪: ' . round($ci['low'] * 100) . ' تا ' . round($ci['high'] * 100) . '٪';
+}
 $tiles = [
     ['gauge', 'پتانسیل رشد', '<span class="' . $v->tone($p->score) . '">' . round($p->score) . '</span><small>/۱۰۰</small>', $v->e($p->label) . ' · اطمینان ' . $v->e($p->confidence)],
     ['probability_up', 'احتمال رشد ۳ ماهه', $p->probabilityUp !== null ? $v->pct($p->probabilityUp * 100, 0, false, false) : '<span class="faint">-</span>', $probText],
@@ -76,10 +94,18 @@ if ($cashLike) {
     $tiles = [
         ['annual_returns', 'بازده ۱ ساله', $v->pct($ret1y), 'رشد مرکب سالانه از ابتدا ' . $v->pct($h['cagr_pct'] ?? null)],
         ['sharpe', 'در برابر نرخ بدون ریسک', $ret1y !== null ? $v->pct($ret1y - $riskFree * 100, 1) : '<span class="faint">-</span>',
-            'نرخ بدون ریسک تنظیمات: ' . $v->pct($riskFree * 100, 0, false, false)],
+            'نرخ بدون ریسک (' . $v->e($riskFreeSource) . '): ' . $v->pct($riskFree * 100, 1, false, false)],
         ['volatility', 'نوسان سالانه', $v->pct($h['volatility_annual_pct'] ?? null, 1, false, false), 'هرچه کمتر، به سپرده نزدیک‌تر'],
         ['max_drawdown', 'بیشترین افت تاریخی', $v->pct($h['max_drawdown_pct'] ?? null, 1), 'از ' . $v->e($h['first_date'] ?? '')],
     ];
+}
+$premium = FundNav::premium($price, $fundNav);
+if ($premium !== null) {
+    // For a buyer a premium is the bad direction, so the colours are inverted on purpose.
+    $tone = $premium > 3 ? 'down' : ($premium < -1 ? 'up' : '');
+    array_splice($tiles, $cashLike ? 1 : 2, 0, [['fund_premium', 'حباب (قیمت به NAV)',
+        '<span class="' . $tone . '">' . $v->pct($premium, 1, false) . '</span>',
+        'NAV ابطال ' . $v->num($fundNav['redemption']) . ($fundNav['subscription'] ? ' · صدور ' . $v->num($fundNav['subscription']) : '')]]);
 }
 ?>
 <section class="kpis" style="--cols:<?= \Sabadgardan\View\View::kpiColumns(count($tiles)) ?>">
@@ -91,6 +117,14 @@ if ($cashLike) {
 <?php if ($class->kind !== \Sabadgardan\Market\AssetClass::STOCK && $class->role() !== ''): ?>
   <div class="notice <?= $class->isCashLike() || $class->isOption() ? 'warn' : '' ?>" style="grid-column:1/-1"><b><?= $v->e($class->label()) ?>:</b> <?= $v->e($class->role()) ?>
     <?php if ($class->isCashLike()): ?> امتیاز پتانسیل رشد و سیگنال‌های فنی برای این نوع ابزار معنای محدودی دارند؛ معیار اصلی آن، بازده سالانه در برابر نرخ سود بدون ریسک است.<?php endif; ?></div>
+<?php endif; ?>
+
+<?php
+// A halt, meeting, capital increase or dividend announced in the last ten days changes how the symbol trades.
+$recent = array_values(array_filter($disclosures, static fn ($d) => $d['important'] && $d['at'] >= $since));
+if ($recent): $d = $recent[0]; ?>
+  <div class="notice warn" style="grid-column:1/-1"><b><?= $v->e(Disclosures::KINDS[$d['kind']]) ?> · <?= $v->e($v->jdatetime($d['at'])) ?>:</b>
+    <?= $v->e($d['title']) ?><?= count($recent) > 1 ? ' <span class="faint">(و ' . $v->num(count($recent) - 1) . ' اطلاعیه‌ی مهم دیگر؛ کارت «اطلاعیه‌ها» را ببینید)</span>' : '' ?></div>
 <?php endif; ?>
 
 <?php if ($holdings): ?>
@@ -166,19 +200,22 @@ if ($cashLike) {
         <i class="win" style="width:<?= round($o['win_rate'] * 100, 1) ?>%"></i><i class="timeout" style="width:<?= round($o['timeout_rate'] * 100, 1) ?>%"></i><i class="loss" style="width:<?= round($o['loss_rate'] * 100, 1) ?>%"></i>
       </div>
       <div class="odds-legend">
-        <span><i class="win"></i>رسیدن به هدف <b><?= round($o['win_rate'] * 100) ?>٪</b></span>
+        <span><i class="win"></i>رسیدن به هدف <b><?= round($o['win_rate'] * 100) ?>٪</b>
+          <?php if (isset($o['win_low'])): ?><small class="faint">(۹۵٪: <?= round($o['win_low'] * 100) ?> تا <?= round($o['win_high'] * 100) ?>٪)</small><?php endif; ?></span>
         <span><i class="timeout"></i>بی‌نتیجه در <?= $o['horizon_days'] ?> جلسه <b><?= round($o['timeout_rate'] * 100) ?>٪</b></span>
         <span><i class="loss"></i>خوردن حد ضرر <b><?= round($o['loss_rate'] * 100) ?>٪</b></span>
       </div>
       <?php
-      $ok = $o['expectancy_pct'] > 0 && $o['win_rate'] >= SignalEngine::MIN_PROBABILITY && $o['win_rate'] > $o['loss_rate']
-          && ($plan['reward_risk'] ?? 0) >= SignalEngine::MIN_REWARD_RISK;
+      $ok = SignalEngine::acceptable($o, $plan['reward_risk'], $regime);
+      $bar = SignalEngine::thresholds($regime);
       ?>
       <p style="margin:12px 0 0"><span class="pill <?= $ok ? 'up' : 'warn' ?>"><?= $ok ? 'طرح از نظر آماری قابل قبول است' : 'طرح معیارهای صدور سیگنال را ندارد' ?></span>
-        <span class="faint" style="font-size:12px">معیار: احتمال ≥ <?= round(SignalEngine::MIN_PROBABILITY * 100) ?>٪، بیشتر از احتمال حد ضرر، پاداش/ریسک ≥ <?= SignalEngine::MIN_REWARD_RISK ?> و بازده مورد انتظار مثبت</span></p>
+        <span class="faint" style="font-size:12px">معیار: احتمال ≥ <?= round($bar['probability'] * 100) ?>٪ و بیشتر از احتمال حد ضرر، کف بازه‌ی اطمینان بالاتر از نقطه‌ی سر‌به‌سر
+          (<?= $plan['reward_risk'] ? round(100 / (1 + $plan['reward_risk'])) : '-' ?>٪)، پاداش/ریسک ≥ <?= SignalEngine::MIN_REWARD_RISK ?> و بازده مورد انتظار مثبت
+          <?= $regime->isBear() ? '· <b class="down">بازار نزولی است و معیارها سخت‌گیرانه‌ترند</b>' : '' ?></span></p>
       <p class="muted" style="font-size:13px;margin:10px 0 0">بازده مورد انتظار هر بار اجرای این طرح در گذشته <?= $v->pct($o['expectancy_pct'], 1) ?> بوده است
         <?= $o['avg_days_to_target'] ? '· میانگین زمان رسیدن به هدف ' . round($o['avg_days_to_target']) . ' جلسه' : '' ?>.
-        <span class="faint">(<?= $o['samples'] ?> نمونه، <?= $o['conditioned'] ? 'فقط موقعیت‌های مشابه امروز' : 'همه‌ی روزهای ۳ سال اخیر؛ موقعیت مشابه کافی نبود' ?>)</span></p>
+        <span class="faint">(<?= $o['samples'] ?> نمونه<?= isset($o['effective_samples']) && $o['effective_samples'] < $o['samples'] ? '، معادل ' . $o['effective_samples'] . ' مشاهده‌ی مستقل' : '' ?>، <?= $o['conditioned'] ? 'فقط موقعیت‌های مشابه امروز' : 'همه‌ی روزهای ۳ سال اخیر؛ موقعیت مشابه کافی نبود' ?>)</span></p>
     <?php else: ?>
       <div class="empty">تاریخچه‌ی کافی برای سنجش احتمال این طرح نیست.</div>
     <?php endif; ?>
@@ -224,6 +261,38 @@ echo $v->card('سطوح قیمتی و ارزش‌گذاری', $kv([
     ['سقف ۵۲ هفته / سقف تاریخی', $v->num($h['high_52w'] ?? null) . ' / ' . $v->num($h['ath'] ?? null)],
 ]), 6, 'levels');
 
+ob_start(); ?>
+<?php if ($disclosures): ?>
+  <ul class="timeline disclosures">
+    <?php foreach (array_slice($disclosures, 0, 10) as $d): ?>
+      <li class="<?= $d['important'] ? 'important' : '' ?>">
+        <span class="sub"><?= $v->assetTag($d['source'], $d['source'] === 'کدال' ? 'accent' : 'orange') ?>
+          <?= $d['kind'] !== 'other' ? $v->assetTag(Disclosures::KINDS[$d['kind']], $d['important'] ? 'gold' : 'neutral') : '' ?>
+          <?= $v->e($v->jdatetime($d['at'])) ?></span>
+        <?php if ($d['url']): ?><a href="<?= $v->e($d['url']) ?>" target="_blank" rel="noopener noreferrer"><?= $v->e($d['title']) ?></a>
+        <?php else: ?><b><?= $v->e($d['title']) ?></b><?php endif; ?>
+        <?php if ($d['body'] !== ''): ?><div class="muted"><?= $v->e(mb_strimwidth($d['body'], 0, 280, '…')) ?></div><?php endif; ?>
+      </li>
+    <?php endforeach; ?>
+  </ul>
+<?php else: ?>
+  <div class="empty">اطلاعیه یا پیام ناظری دریافت نشد.</div>
+<?php endif; ?>
+<?php
+echo $v->card('اطلاعیه‌ها و پیام‌های ناظر', (string) ob_get_clean(), $cashLike ? 12 : 6, 'disclosures', 'کدال و ناظر بازار');
+if (!$cashLike) {
+    $chart = $usdLink ? Charts::rebased($b->history->dates, $b->history->close, $usd, $inst->symbol, 'دلار آزاد') : [];
+    $body = $chart ? $v->chart($chart, 'short') : '';
+    $body .= '<p class="muted" style="font-size:13px;margin:8px 0 0">' . $v->e(Sensitivity::describe($usdLink)) . '</p>';
+    if ($usdLink) {
+        $body .= $kv([
+            ['بتای دلاری', $v->num($usdLink['beta'], 2)],
+            ['همبستگی بازده هفتگی', $v->num($usdLink['correlation'], 2)],
+            ['بازده یک ساله: نماد / دلار', $v->pct($usdLink['symbol_return_pct'], 0) . ' / ' . $v->pct($usdLink['driver_return_pct'], 0)],
+        ]);
+    }
+    echo $v->card('رابطه با دلار آزاد', $body, 6, 'usd_link', $usdLink ? $usdLink['weeks'] . ' هفته' : '');
+}
 echo $v->card('بازده سال‌های شمسی', $v->chart(Charts::bars($h['annual_returns'] ?? [], 'بازده'), 'short'), 6, 'annual_returns');
 echo $v->card('افت از سقف (Drawdown)', $v->chart(Charts::underwater($b->history->dates, $b->history->close), 'short'), 6, 'drawdown');
 echo $v->card('کارنامه‌ی تاریخی', $kv([
@@ -253,5 +322,18 @@ echo $v->card('اندیکاتورها', $kv([
   <?php endforeach; ?>
 </ul>
 <?= $v->card('سیگنال‌های کوتاه‌مدت', (string) ob_get_clean(), 4, 'signals_short') ?>
+
+<?php ob_start(); $back = '/stock?ins=' . rawurlencode($inst->insCode); ?>
+<form method="post" action="<?= $v->url('alerts') ?>" class="alert-form">
+  <?= $v->csrf() ?><input type="hidden" name="ins_code" value="<?= $v->e($inst->insCode) ?>"><input type="hidden" name="back" value="<?= $v->e($back) ?>">
+  <label class="sr-only" for="al-dir">شرط</label>
+  <select id="al-dir" name="direction"><option value="above">وقتی قیمت بالاتر از</option><option value="below">وقتی قیمت پایین‌تر از</option></select>
+  <div class="input-unit"><input name="price" inputmode="decimal" class="num-input" required placeholder="<?= $v->e(number_format($lv['target'] ?? $price)) ?>" aria-label="قیمت"><span>ریال</span></div>
+  <input name="note" maxlength="200" placeholder="یادداشت (اختیاری)، مثلاً «شکست مقاومت»" aria-label="یادداشت">
+  <button class="btn">ثبت هشدار</button>
+</form>
+<p class="faint" style="font-size:12px;margin:6px 0 12px">پیشنهاد: هدف <?= $v->num($lv['target']) ?> و حد ضرر <?= $v->num($lv['stop']) ?>. هشدار در ساعات معاملات بررسی و به بله/تلگرام فرستاده می‌شود.</p>
+<?= $v->partial('partials/alerts', ['alerts' => $alerts, 'back' => $back, 'showSymbol' => false]) ?>
+<?= $v->card('هشدار قیمت', (string) ob_get_clean(), 12, 'price_alerts', '', '', 'price-alerts') ?>
 
 <?= $v->partial('partials/tx_drawer', ['portfolio' => $portfolio, 'fees' => $fees]) ?>

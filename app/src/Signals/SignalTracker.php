@@ -55,7 +55,8 @@ final class SignalTracker
         for ($j = $start; $j <= $end; $j++) {
             $prev = $raw->close[$j - 1] ?? 0.0;
             $ref = $raw->yesterday[$j] ?? 0.0;
-            if ($j > $start && $prev > 0 && $ref > 0 && $ref / $prev < 0.995) {
+            // From the first session on: one effective the day after the signal changes its reference too.
+            if ($prev > 0 && $ref > 0 && $ref / $prev < 0.995) {
                 $scale *= $prev / $ref;  // capital increase or dividend: keep prices in the signal's terms
             }
             $days++;

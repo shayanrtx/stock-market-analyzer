@@ -111,6 +111,25 @@ final class Stats
         return max($lo, min($hi, $x));
     }
 
+    /**
+     * Wilson score interval of a proportion: where the true rate plausibly lies given $successes out
+     * of $n (95% by default). Unlike ±1.96·√(p(1−p)/n) it stays inside [0, 1] and is honest for
+     * small samples: 7 of 10 is 40–89%, 70 of 100 is 60–78%.
+     *
+     * @return array{low: float, high: float}|null
+     */
+    public static function wilson(int $successes, int $n, float $z = 1.96): ?array
+    {
+        if ($n <= 0) {
+            return null;
+        }
+        $p = max(0, min($successes, $n)) / $n;
+        $z2 = $z * $z;
+        $centre = ($p + $z2 / (2 * $n)) / (1 + $z2 / $n);
+        $half = $z * sqrt($p * (1 - $p) / $n + $z2 / (4 * $n * $n)) / (1 + $z2 / $n);
+        return ['low' => max(0.0, $centre - $half), 'high' => min(1.0, $centre + $half)];
+    }
+
     /** Last non-null value of a series. */
     public static function last(array $x): ?float
     {

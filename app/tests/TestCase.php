@@ -12,6 +12,8 @@ abstract class TestCase
 {
     /** Simulated "now" for apps built by makeApp(); tests move it. */
     protected int $now = 0;
+    /** One private storage directory per test (cache, logs, lock). */
+    protected ?string $storageDir = null;
 
     public function setUp(): void
     {
@@ -29,7 +31,9 @@ abstract class TestCase
                                                           'cron_token' => 'secret-token']);
         $app = new \Sabadgardan\App(dirname(__DIR__), $config);
         $app->withTransport(new \Sabadgardan\Market\Http\DemoTransport($clock))->withClock($clock);
-        $app->setCache(new \Sabadgardan\Core\Cache(sys_get_temp_dir() . '/sbg-test-' . bin2hex(random_bytes(5)), $clock));
+        $storage = $this->storageDir ??= sys_get_temp_dir() . '/sbg-test-' . bin2hex(random_bytes(5));
+        $app->withStorage($storage);
+        $app->setCache(new \Sabadgardan\Core\Cache($storage . '/cache', $clock));
         if (!$db) {
             $db = \Sabadgardan\Core\Database::memory();
             (new \Sabadgardan\Core\Migrations($db))->migrate();
@@ -71,6 +75,13 @@ abstract class TestCase
     protected function assertNull(mixed $value, string $message = ''): void
     {
         $this->assertSame(null, $value, $message);
+    }
+
+    protected function assertNotNull(mixed $value, string $message = ''): void
+    {
+        if ($value === null) {
+            throw new AssertionFailed($message ?: 'expected a value, got null');
+        }
     }
 
     protected function assertContains(string $needle, string $haystack, string $message = ''): void

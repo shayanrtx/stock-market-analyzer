@@ -170,9 +170,54 @@ final class RiskAnalyzer
             'drawdown' => $drawdown,
             'metrics' => $m,
             'risk_contribution' => $contribution,
+            'covariance' => $cov,
             'correlation' => $correlation,
             'per_symbol' => $perSymbol,
         ];
+    }
+
+    /**
+     * Equal-risk-contribution weights: each holding adds the same share of portfolio variance.
+     * A neutral reference for sizing that needs no return forecasts: a volatile or highly
+     * correlated holding gets less money. Cyclical coordinate descent on x_i·(Σx)_i = 1/n
+     * (Griveau-Billion, Richard & Roncalli, 2013), then normalised to sum to one.
+     *
+     * @param array<string, array<string, float>> $cov
+     * @return array<string, float>|null weights summing to 1, or null if it doesn't converge
+     */
+    public static function riskParity(array $cov, int $maxIter = 500): ?array
+    {
+        $keys = array_keys($cov);
+        $n = count($keys);
+        if ($n === 0) {
+            return null;
+        }
+        foreach ($keys as $k) {
+            if (($cov[$k][$k] ?? 0) <= 0) {
+                return null;   // a holding without price moves (or data) has no risk to balance
+            }
+        }
+        $x = array_fill_keys($keys, 1 / $n);
+        for ($it = 0; $it < $maxIter; $it++) {
+            $change = 0.0;
+            foreach ($keys as $i) {
+                $a = $cov[$i][$i];
+                $b = 0.0;
+                foreach ($keys as $j) {
+                    if ($j !== $i) {
+                        $b += $cov[$i][$j] * $x[$j];
+                    }
+                }
+                $new = (-$b + sqrt($b * $b + 4 * $a / $n)) / (2 * $a);
+                $change = max($change, abs($new - $x[$i]));
+                $x[$i] = $new;
+            }
+            if ($change < 1e-10) {
+                $sum = array_sum($x);
+                return array_map(static fn ($v) => $v / $sum, $x);
+            }
+        }
+        return null;
     }
 
     /** @param list<float> $weightsPct @return array{hhi: float, effective_positions: float} */

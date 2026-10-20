@@ -36,6 +36,8 @@ HEADERS = {
 
 RETRYABLE_STATUS = {429, 502, 503, 504}
 
+ADJUST_TOLERANCE = 0.002  # ignore yesterday/close mismatches from tick rounding
+
 # Market flow codes used by the Index and MarketData endpoints.
 FLOW_BOURSE = 1
 FLOW_FARABOURSE = 2
@@ -156,6 +158,11 @@ class TsetmcClient:
         """Today's individual (حقیقی) / institutional (حقوقی) buy-sell breakdown."""
         return self.get(f"ClientType/GetClientType/{ins_code}/1/0").get("clientType") or {}
 
+    def client_type_history(self, ins_code: str) -> list[dict]:
+        """Daily individual/institutional history (not in the endpoint reference; verify with doctor)."""
+        data = self.get(f"ClientType/GetClientTypeHistory/{ins_code}")
+        return _as_list(field(data, "clientType") if isinstance(data, dict) else data)
+
     def best_limits(self, ins_code: str) -> list[dict]:
         return self.get(f"BestLimits/{ins_code}").get("bestLimits") or []
 
@@ -247,6 +254,28 @@ def daily_history_frame(rows: list[dict]) -> pd.DataFrame:
     if "volume" in df.columns:
         df = df[df["volume"] > 0]
     return df.astype(float)
+
+
+def adjust_prices(df: pd.DataFrame) -> tuple[pd.DataFrame, list[tuple[pd.Timestamp, float]]]:
+    """Back-adjust prices for capital increases and cash dividends.
+
+    On an adjustment day TSETMC's reference price (``priceYesterday``) differs from
+    the previous close; their ratio is the adjustment factor, applied to all
+    earlier prices. Volumes are left as reported.
+    """
+    if "yesterday" not in df.columns or len(df) < 2:
+        return df, []
+    ratio = df["yesterday"] / df["close"].shift()
+    is_event = ((ratio - 1).abs() > ADJUST_TOLERANCE) & ratio.between(0.05, 1.5) & (df["yesterday"] > 0)
+    factors = ratio.where(is_event, 1.0).fillna(1.0)
+    # cum[t] = product of the factors of every event after day t.
+    cum = factors[::-1].cumprod()[::-1].shift(-1, fill_value=1.0)
+    out = df.copy()
+    for col in ("open", "high", "low", "last", "close", "yesterday"):
+        if col in out.columns:
+            out[col] = out[col] * cum
+    events = [(d, float(f)) for d, f in factors[is_event].items()]
+    return out, events
 
 
 def _normalize_fa(text: str) -> str:

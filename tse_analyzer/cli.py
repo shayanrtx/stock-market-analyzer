@@ -1,4 +1,4 @@
-"""Command line entry point: ``tse-analyzer {search,analyze,market,screen,portfolio,doctor,serve}``."""
+"""Command line entry point: ``tse-analyzer {search,analyze,potential,market,screen,portfolio,doctor,serve}``."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 import sys
 from dataclasses import asdict
 
-from . import doctor, portfolio, report, screener
+from . import doctor, portfolio, potential, report, screener
 from .analysis import fetch_and_analyze
 from .client import FLOW_BOURSE, FLOW_FARABOURSE, TseGatewayClient, TsetmcClient, TsetmcError
 
@@ -37,6 +37,26 @@ def cmd_analyze(client: TsetmcClient, args: argparse.Namespace) -> int:
         else:
             print(report.stock_text(result))
             print("-" * 60)
+    return status
+
+
+def cmd_potential(client: TsetmcClient, args: argparse.Namespace) -> int:
+    status = 0
+    for symbol in args.symbols:
+        try:
+            a, pot, _ = potential.fetch_potential(client, symbol, on_warning=_warn)
+        except TsetmcError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            status = 1
+            continue
+        if args.json:
+            print(json.dumps({"analysis": report.stock_dict(a), "potential": asdict(pot)},
+                             ensure_ascii=False, indent=2, default=str))
+        else:
+            print(report.stock_text(a))
+            print()
+            print(report.potential_text(a.symbol, pot))
+            print("=" * 60)
     return status
 
 
@@ -122,6 +142,11 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("symbols", nargs="+", help="نماد (مثلاً فولاد) یا insCode")
     a.add_argument("--days", type=int, default=400, help="تعداد روزهای تاریخچه (0 = همه)")
     a.set_defaults(func=cmd_analyze)
+
+    pt = sub.add_parser("potential", aliases=["deep"],
+                        help="بررسی کامل گذشته‌نگر و ارزیابی پتانسیل رشد")
+    pt.add_argument("symbols", nargs="+", help="نماد یا insCode")
+    pt.set_defaults(func=cmd_potential)
 
     m = sub.add_parser("market", help="وضعیت شاخص‌ها و نمادهای اثرگذار")
     m.add_argument("--farabourse", action="store_true", help="فرابورس به‌جای بورس")

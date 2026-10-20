@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from .analysis import fetch_and_analyze
-from .client import TsetmcClient, TsetmcError, field
+from .potential import fetch_potential
+from .client import TsetmcClient, TsetmcError
 
 TRADING_DAYS = 250
 MAX_POSITION_WEIGHT = 25.0  # percent; above this a single holding is flagged
@@ -52,6 +52,9 @@ class Position:
     signals: int = 0
     rsi: float | None = None
     buyer_power: float | None = None
+    potential_score: float | None = None
+    potential_label: str = ""
+    upside_pct: float | None = None
     error: str = ""
 
 
@@ -122,7 +125,7 @@ def analyze_portfolio(client: TsetmcClient, holdings: list[Holding], workers: in
     def one(h: Holding) -> tuple[Position, pd.Series | None]:
         pos = Position(h)
         try:
-            a, history = fetch_and_analyze(client, h.symbol, TRADING_DAYS + 30)
+            a, pot, history = fetch_potential(client, h.symbol)
         except TsetmcError as exc:
             pos.error = str(exc)
             return pos, None
@@ -139,7 +142,9 @@ def analyze_portfolio(client: TsetmcClient, holdings: list[Holding], workers: in
         if h.avg_cost and pos.close:
             pos.cost_pnl = (pos.close - h.avg_cost) * h.quantity
             pos.cost_pnl_pct = pos.close / h.avg_cost * 100 - 100
-        pos.sector = _sector(client, a.ins_code)
+        pos.sector = pot.sector
+        pos.potential_score, pos.potential_label = pot.score, pot.label
+        pos.upside_pct = pot.levels["upside_pct"]
         return pos, history["close"] * h.quantity
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -211,6 +216,8 @@ def _warnings(positions: list[Position], sectors: dict[str, float]) -> list[str]
             out.append(f"{s}: {p.weight:.0f}٪ از پرتفو در یک نماد (تمرکز بالا)")
         if p.verdict.startswith("نزولی"):
             out.append(f"{s}: سیگنال {p.verdict}")
+        if p.potential_score is not None and p.potential_score <= 35:
+            out.append(f"{s}: {p.potential_label} (امتیاز {p.potential_score:.0f})")
         if p.rsi is not None and p.rsi >= 75:
             out.append(f"{s}: RSI={p.rsi:.0f} اشباع خرید")
     for name, w in sectors.items():
@@ -223,14 +230,6 @@ def _previous_close(history: pd.DataFrame) -> float | None:
     if "yesterday" in history.columns and history["yesterday"].iloc[-1]:
         return float(history["yesterday"].iloc[-1])
     return float(history["close"].iloc[-2]) if len(history) > 1 else None
-
-
-def _sector(client: TsetmcClient, ins_code: str) -> str:
-    try:
-        info = client.instrument_info(ins_code)
-    except TsetmcError:
-        return ""
-    return str(field(field(info, "sector") or {}, "lSecVal", default="")).strip()
 
 
 def _ret(series: pd.Series, periods: int) -> float | None:

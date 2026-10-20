@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from . import indicators as ind
+from .client import TsetmcError, adjust_prices
 from .client import field as pick
 
 
@@ -29,6 +30,8 @@ class StockAnalysis:
     money_flow: dict[str, float | None]
     signals: list[Signal] = field(default_factory=list)
     ins_code: str = ""
+    # (date, factor) of capital-increase/dividend adjustments applied to the history
+    adjustments: list = field(default_factory=list)
 
     @property
     def score(self) -> int:
@@ -216,13 +219,12 @@ def fetch_and_analyze(
     Supplementary endpoints (price info, client type) are optional: a halted symbol
     returns HTTP 500 for them, which must not abort the analysis.
     """
-    from .client import TsetmcError
-
     inst = client.resolve(symbol)
     ins_code = str(inst["insCode"])
     history = client.daily_history(ins_code, days)
     if history.empty:
         raise TsetmcError(f"{symbol}: تاریخچه‌ی قیمت پیدا نشد")
+    history, adjustments = adjust_prices(history)
 
     def optional(fn):
         try:
@@ -240,4 +242,5 @@ def fetch_and_analyze(
         optional(client.closing_price_info),
     )
     result.ins_code = ins_code
+    result.adjustments = adjustments
     return result, history

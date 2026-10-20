@@ -6,6 +6,7 @@ from dataclasses import asdict
 
 from .analysis import StockAnalysis
 from .portfolio import PortfolioReport
+from .potential import Potential
 from .screener import MoverRow, SmartMoneyRow
 
 RETURN_LABELS = {"1w": "یک هفته", "1m": "یک ماه", "3m": "سه ماه", "6m": "شش ماه", "1y": "یک سال"}
@@ -108,7 +109,7 @@ def portfolio_text(r: PortfolioReport) -> str:
     ]
     if r.cost_pnl is not None:
         lines.append(f"سود/زیان نسبت به قیمت خرید: {fmt_num(_to_mt(r.cost_pnl), 1)} م.ت")
-    lines += ["", f"  {'نماد':<12} {'تعداد':>9} {'قیمت':>9} {'امروز':>8} {'وزن':>6}  سیگنال"]
+    lines += ["", f"  {'نماد':<12} {'تعداد':>9} {'قیمت':>9} {'امروز':>8} {'وزن':>6}  سیگنال / پتانسیل رشد"]
     for p in r.positions:
         if p.error:
             lines.append(f"  {p.holding.symbol:<12} {fmt_num(p.holding.quantity):>9}  خطا: {p.error}")
@@ -116,6 +117,7 @@ def portfolio_text(r: PortfolioReport) -> str:
         lines.append(
             f"  {p.holding.symbol:<12} {fmt_num(p.holding.quantity):>9} {fmt_num(p.close):>9} "
             f"{fmt_pct(p.day_change_pct):>8} {p.weight:5.1f}%  {p.verdict} ({p.score:+d})"
+            + (f" / {p.potential_label} ({p.potential_score:.0f})" if p.potential_score is not None else "")
         )
     if r.sectors:
         lines += ["", "ترکیب صنعت:"]
@@ -133,6 +135,53 @@ def portfolio_text(r: PortfolioReport) -> str:
     if r.warnings:
         lines += ["", "هشدارها:"] + [f"  ! {w}" for w in r.warnings]
     lines += ["", "این خروجی تحلیل خودکار است و توصیه‌ی خرید یا فروش نیست."]
+    return "\n".join(lines)
+
+
+def potential_text(symbol: str, p: Potential) -> str:
+    lv, h = p.levels, p.history
+    lines = [
+        f"پتانسیل رشد {symbol}: {p.label} — امتیاز {p.score:.0f} از ۱۰۰ (اطمینان: {p.confidence})",
+        "",
+        "نقاط قوت:",
+    ]
+    lines += [f"  + {f.name}: {f.detail}" for f in p.strengths] or ["  -"]
+    lines += ["", "نقاط ضعف:"]
+    lines += [f"  - {f.name}: {f.detail}" for f in p.weaknesses] or ["  -"]
+    neutral = [f for f in p.factors if -0.1 <= f.score <= 0.1]
+    if neutral:
+        lines += ["", "خنثی:"] + [f"  • {f.name}: {f.detail}" for f in neutral]
+
+    lines += ["", "سطوح قیمتی:"]
+    lines.append(f"  هدف (مقاومت): {fmt_num(lv['target'])} ({fmt_pct(lv['upside_pct'])})"
+                 if lv["target"] else "  هدف: قیمت نزدیک سقف تاریخی است، مقاومت مشخصی بالای آن نیست")
+    lines.append(f"  حمایت: {fmt_num(lv['support'])} ({fmt_pct(lv['downside_pct'])})" if lv["support"] else "  حمایت: -")
+    if lv["reward_risk"]:
+        lines.append(f"  نسبت پاداش به ریسک: {lv['reward_risk']:.1f}")
+
+    lines += [
+        "",
+        f"کارنامه‌ی تاریخی (از {h['first_date']}، {h['years']:.1f} سال، قیمت تعدیل‌شده):",
+        f"  رشد مرکب سالانه {fmt_pct(h['cagr_pct'])} در برابر تورم فرضی {h['inflation_pct']:.0f}٪"
+        + ("" if h["beats_inflation"] is None else (" ✓ بالاتر از تورم" if h["beats_inflation"] else " ✗ کمتر از تورم")),
+        f"  بیشترین افت تاریخی {h['max_drawdown_pct']:.0f}٪   فاصله از سقف تاریخی {h['drawdown_from_ath_pct']:.0f}٪",
+        "  بازده سال‌های شمسی: " + "  ".join(f"{y}: {r:+.0f}٪" for y, r in list(h["annual_returns"].items())[-8:]),
+    ]
+    a = p.analogs
+    if a and a.get("mean_pct") is not None:
+        lines += [
+            "",
+            f"موقعیت‌های مشابه در گذشته ({a['samples']} مورد، {a['horizon_days']} روز معاملاتی بعد):",
+            f"  میانگین {fmt_pct(a['mean_pct'])}   میانه {fmt_pct(a['median_pct'])}   "
+            f"بهترین {fmt_pct(a['best_pct'])}   بدترین {fmt_pct(a['worst_pct'])}",
+            f"  {a['win_rate'] * 100:.0f}٪ مثبت، {a['beat_inflation_rate'] * 100:.0f}٪ بالاتر از تورم دوره "
+            f"({a['hurdle_pct']:.0f}٪)",
+        ]
+    elif a is not None:
+        lines += ["", f"موقعیت مشابه کافی در گذشته پیدا نشد ({a.get('samples', 0)} مورد)"]
+    if p.adjustments:
+        lines += ["", f"{len(p.adjustments)} تعدیل قیمت (افزایش سرمایه/سود نقدی) روی تاریخچه اعمال شد."]
+    lines += ["", "این ارزیابی بر پایه‌ی داده‌های گذشته است، آینده را تضمین نمی‌کند و توصیه‌ی خرید یا فروش نیست."]
     return "\n".join(lines)
 
 

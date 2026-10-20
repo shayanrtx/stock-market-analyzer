@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 import json
 import sys
+from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -18,7 +19,7 @@ import pandas as pd
 
 from . import indicators as ind
 from . import portfolio, report, screener
-from .analysis import fetch_and_analyze
+from .potential import Potential, fetch_potential
 from .client import FLOW_BOURSE, FLOW_FARABOURSE, TseGatewayClient, TsetmcClient, TsetmcError, field
 from .report import fmt_num, fmt_pct
 
@@ -136,7 +137,7 @@ def home_page(cdn: TsetmcClient, gw: TseGatewayClient) -> str:
 
 def stock_page(cdn: TsetmcClient, symbol: str) -> str:
     try:
-        a, history = fetch_and_analyze(cdn, symbol)
+        a, pot, history = fetch_potential(cdn, symbol)
     except TsetmcError as exc:
         return page(symbol, error_card(exc))
 
@@ -147,7 +148,9 @@ def stock_page(cdn: TsetmcClient, symbol: str) -> str:
             + f'</p><p class="verdict {cls}">{e(a.verdict)} <span class=muted>'
               f"(امتیاز {a.score:+d} از {len(a.signals)})</span></p>"
               "<p class=muted>تحلیل خودکار تکنیکال است، نه توصیه‌ی خرید یا فروش.</p>")
-    parts = [card("خلاصه", head, wide=True), card("نمودار قیمت (۲۵۰ روز)", price_chart(history), wide=True)]
+    parts = [card("خلاصه", head, wide=True), potential_card(pot),
+             card("نمودار قیمت (۲۵۰ روز، تعدیل‌شده)", price_chart(history), wide=True)]
+    parts += history_cards(pot)
 
     returns = "".join(f"<tr><td>{e(label)}</td>{signed(a.returns.get(k))}</tr>"
                       for k, label in report.RETURN_LABELS.items())
@@ -177,6 +180,69 @@ def stock_page(cdn: TsetmcClient, symbol: str) -> str:
         f"{report.ARROW[s.score]}</td><td>{e(s.detail)}</td></tr>" for s in a.signals)
     parts.append(card("سیگنال‌ها", f"<table>{sig}</table>"))
     return page(f"{a.symbol} — تحلیل", "".join(parts))
+
+
+def potential_card(p: Potential) -> str:
+    cls = "up" if p.score >= 55 else "down" if p.score <= 45 else ""
+    lv = p.levels
+    head = (f'<p class="verdict {cls}">{e(p.label)} <span class=muted>— امتیاز {p.score:.0f} از ۱۰۰، '
+            f"اطمینان {e(p.confidence)}</span></p>"
+            f'<div style="background:var(--line);border-radius:4px"><div class=bar style="width:{p.score:.0f}%">'
+            "</div></div>")
+    pros = "".join(f"<li class=up>{e(f.name)}: {e(f.detail)}</li>" for f in p.strengths)
+    cons = "".join(f"<li class=down>{e(f.name)}: {e(f.detail)}</li>" for f in p.weaknesses)
+    neutral = "".join(f"<li class=muted>{e(f.name)}: {e(f.detail)}</li>"
+                      for f in p.factors if -0.1 <= f.score <= 0.1)
+    levels = "<table>"
+    levels += (f"<tr><td>هدف (مقاومت)</td><td class=num>{fmt_num(lv['target'])}</td>{signed(lv['upside_pct'])}</tr>"
+               if lv["target"] else "<tr><td>هدف</td><td colspan=2>نزدیک سقف تاریخی، مقاومت مشخصی نیست</td></tr>")
+    if lv["support"]:
+        levels += f"<tr><td>حمایت</td><td class=num>{fmt_num(lv['support'])}</td>{signed(lv['downside_pct'])}</tr>"
+    if lv["reward_risk"]:
+        levels += f"<tr><td>پاداش به ریسک</td><td class=num colspan=2>{lv['reward_risk']:.1f}</td></tr>"
+    levels += "</table>"
+    body = (head + "<div class=stats style='margin-top:12px'>"
+            f"<div style='flex:1 1 300px'><b style='font-size:15px'>نقاط قوت</b><ul>{pros or '<li>-</li>'}</ul></div>"
+            f"<div style='flex:1 1 300px'><b style='font-size:15px'>نقاط ضعف</b><ul>{cons or '<li>-</li>'}</ul></div>"
+            "</div>" + (f"<ul>{neutral}</ul>" if neutral else "") + levels
+            + "<p class=muted>ارزیابی بر پایه‌ی داده‌های گذشته است، آینده را تضمین نمی‌کند و توصیه‌ی سرمایه‌گذاری نیست.</p>")
+    return card("پتانسیل رشد", body, wide=True)
+
+
+def history_cards(p: Potential) -> list[str]:
+    h = p.history
+    beat = "" if h["beats_inflation"] is None else ("✓ بالاتر از تورم" if h["beats_inflation"] else "✗ کمتر از تورم")
+    rows = [("از تاریخ", h["first_date"]), ("طول تاریخچه", f"{h['years']:.1f} سال"),
+            ("بازده کل", fmt_pct(h["total_return_pct"])),
+            ("رشد مرکب سالانه", fmt_pct(h["cagr_pct"])),
+            ("در برابر تورم", beat or "-"),
+            ("بیشترین افت تاریخی", f"{h['max_drawdown_pct']:.0f}%"),
+            ("فاصله از سقف تاریخی", f"{h['drawdown_from_ath_pct']:.0f}%"),
+            ("نوسان سالانه", f"{fmt_num(h['volatility_annual_pct'], 0)}%"),
+            ("تعدیل‌های اعمال‌شده", str(len(p.adjustments)))]
+    summary = "<table>" + "".join(f"<tr><td>{e(n)}</td><td class=num>{e(v)}</td></tr>" for n, v in rows)
+    summary += f"</table><p class=muted>تورم فرضی سالانه {h['inflation_pct']:.0f}٪ به‌عنوان معیار.</p>"
+    cards = [card("کارنامه‌ی تاریخی", summary)]
+
+    annual = list(h["annual_returns"].items())[-10:]
+    if annual:
+        top = max(abs(r) for _, r in annual) or 1
+        rows = "".join(
+            f"<tr><td>{y}</td>{signed(r)}<td style='width:50%'><div class=bar style='width:{abs(r) / top * 100:.0f}%;"
+            f"background:var(--{'up' if r >= 0 else 'down'})'></div></td></tr>" for y, r in annual)
+        cards.append(card("بازده سال‌های شمسی", f"<table>{rows}</table>"))
+
+    a = p.analogs
+    if a and a.get("mean_pct") is not None:
+        rows = [("تعداد موقعیت", str(a["samples"])), ("میانگین بازده", fmt_pct(a["mean_pct"])),
+                ("میانه", fmt_pct(a["median_pct"])), ("درصد مثبت", f"{a['win_rate'] * 100:.0f}%"),
+                (f"بالاتر از تورم ({a['hurdle_pct']:.0f}٪)", f"{a['beat_inflation_rate'] * 100:.0f}%"),
+                ("بهترین", fmt_pct(a["best_pct"])), ("بدترین", fmt_pct(a["worst_pct"]))]
+        cards.append(card(f"موقعیت‌های مشابه در گذشته ({a['horizon_days']} روز بعد)", "<table>" + "".join(
+            f"<tr><td>{e(n)}</td><td class=num>{e(v)}</td></tr>" for n, v in rows) + "</table>"
+            "<p class=muted>روزهایی که وضعیت روند، RSI و فاصله از سقف شبیه امروز بوده است. آخرین موارد: "
+            + e("، ".join(a["dates"])) + "</p>"))
+    return cards
 
 
 def screener_page(cdn: TsetmcClient, gw: TseGatewayClient, kind: str) -> str:
@@ -234,7 +300,7 @@ def portfolio_page(cdn: TsetmcClient, path: Path) -> str:
     for x in r.positions:
         if x.error:
             rows.append(f"<tr><td>{_stock_link(x.holding.symbol)}</td><td class=num>"
-                        f"{fmt_num(x.holding.quantity)}</td><td colspan=7 class=error>{e(x.error)}</td></tr>")
+                        f"{fmt_num(x.holding.quantity)}</td><td colspan=9 class=error>{e(x.error)}</td></tr>")
             continue
         sig_cls = "up" if x.score > 0 else "down" if x.score < 0 else ""
         cost = signed(x.cost_pnl_pct) if x.cost_pnl_pct is not None else "<td class=num>-</td>"
@@ -243,9 +309,11 @@ def portfolio_page(cdn: TsetmcClient, path: Path) -> str:
             f"<td class=num>{fmt_num(x.close)}</td>{signed(x.day_change_pct)}"
             f"<td class=num>{fmt_num(_mt(x.value), 1)}</td><td class=num>{x.weight:.1f}%</td>{cost}"
             f'<td class="{sig_cls}">{e(x.verdict)} ({x.score:+d})</td>'
+            f"{_potential_cell(x.potential_score, x.potential_label)}{signed(x.upside_pct)}"
             f"<td class=num>{fmt_num(x.buyer_power, 2)}</td></tr>")
     table = ("<table><tr><th>نماد</th><th>تعداد</th><th>قیمت</th><th>امروز</th><th>ارزش (م.ت)</th>"
-             "<th>وزن</th><th>از خرید</th><th>سیگنال</th><th>قدرت خریدار</th></tr>"
+             "<th>وزن</th><th>از خرید</th><th>سیگنال</th><th>پتانسیل رشد</th><th>تا هدف</th>"
+             "<th>قدرت خریدار</th></tr>"
              + "".join(rows) + "</table>")
     parts.append(card("دارایی‌ها", table, wide=True))
 
@@ -322,9 +390,9 @@ def make_handler(cdn: TsetmcClient, gw: TseGatewayClient, portfolio_path: Path):
                 self._send(screener_page(cdn, gw, q.get("type", "")))
             elif url.path == "/api/stock" and q.get("symbol"):
                 try:
-                    result, _ = fetch_and_analyze(cdn, q["symbol"].strip())
-                    self._send(json.dumps(report.stock_dict(result), ensure_ascii=False),
-                               "application/json")
+                    result, pot, _ = fetch_potential(cdn, q["symbol"].strip())
+                    body = {"analysis": report.stock_dict(result), "potential": asdict(pot)}
+                    self._send(json.dumps(body, ensure_ascii=False, default=str), "application/json")
                 except TsetmcError as exc:
                     self._send(json.dumps({"error": str(exc)}, ensure_ascii=False),
                                "application/json", 502)
@@ -367,6 +435,13 @@ def serve(host: str, port: int, cdn: TsetmcClient, gw: TseGatewayClient,
         pass
     finally:
         server.server_close()
+
+
+def _potential_cell(score: float | None, label: str) -> str:
+    if score is None:
+        return "<td>-</td>"
+    cls = "up" if score >= 55 else "down" if score <= 45 else ""
+    return f'<td class="{cls}">{score:.0f} — {e(label)}</td>'
 
 
 def _stock_link(symbol: str) -> str:

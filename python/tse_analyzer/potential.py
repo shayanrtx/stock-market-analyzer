@@ -344,9 +344,11 @@ def assess(
 
     # --- technical: accumulation / distribution
     if "volume" in history.columns and len(history) > 25:
-        recent = history.iloc[-20:]
-        chg = recent["close"].diff()
-        up_vol, down_vol = recent["volume"][chg > 0].sum(), recent["volume"][chg < 0].sum()
+        # 21 rows give 20 day-over-day changes for the last 20 sessions.
+        recent = history.iloc[-21:]
+        chg = recent["close"].diff().iloc[1:]
+        vol = recent["volume"].iloc[1:]
+        up_vol, down_vol = vol[chg > 0].sum(), vol[chg < 0].sum()
         if up_vol and down_vol:
             ratio = up_vol / down_vol
             factors.append(Factor(

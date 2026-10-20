@@ -152,3 +152,14 @@ def test_low_turnover_portfolio_by_hand():
     # A share still among the best is kept: no trades after the first purchase.
     calm = scored.assign(score=np.where(scored["symbol"] == "A", 0.9, 0.1), down_limit=0.0)
     assert st.hold_curve(calm, top_k=1, keep=2)[1] == 1
+
+
+def test_queue_flags_chosen_as_facts_are_not_duplicated():
+    # On the real market the sell-queue flag was itself a chosen fact; the portfolio reads it too.
+    universe, _ = market(symbols=25, n=300)
+    panel, _, _ = st.build_panel(universe, horizons=(1,))
+    scored = st.score_frame(panel, "c1", {"down_limit": -1, "up_limit": -1, "buyer_power": 1})
+    assert not scored.columns.duplicated().any()
+    assert scored["score"].notna().mean() > 0.9
+    curve, trades, _, _ = st.hold_curve(scored)
+    assert len(curve) == scored["date"].nunique() and trades > 0

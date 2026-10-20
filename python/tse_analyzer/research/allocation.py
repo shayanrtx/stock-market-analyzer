@@ -134,7 +134,10 @@ def stats(curve: pd.Series, usd: pd.Series, switches: int, inflation: float) -> 
     in_usd = growth / float(usd.loc[curve.index[-1]] / usd.loc[curve.index[0]])
     keys = ["%04d/%02d" % gregorian_to_jalali(d.year, d.month, d.day)[:2] for d in curve.index]
     monthly = curve.groupby(keys, sort=False).last().pct_change().dropna()
-    rolling = curve / curve.shift(240) - 1  # about a year of sessions
+    year_ago = curve.index - pd.DateOffset(years=1)
+    known = year_ago >= curve.index[0]
+    rolling = pd.Series(curve.to_numpy()[known] / curve.reindex(year_ago[known], method="ffill").to_numpy() - 1,
+                        index=curve.index[known])  # every 12-month holding period
     return {"years": round(years, 1), "cagr_pct": (growth ** (1 / years) - 1) * 100 if years > 0 else None,
             "usd_cagr_pct": (in_usd ** (1 / years) - 1) * 100 if years > 0 else None,
             "max_drawdown_pct": float((curve / curve.cummax() - 1).min() * 100),

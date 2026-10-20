@@ -363,11 +363,7 @@ def _evaluate(panel, key, label, h, offset, train_mask, test_mask, calendar, ind
         out["monthly_random"] = monthly_returns(_selected(panel[valid & test_mask], key, None, top_k), calendar, h,
                                                 offset, index, inflation)
         return out, None
-    # Scored on every share of the test days (a share in a buy queue can't be bought, but can be held).
-    scored = panel.loc[test_mask, ["date", "symbol", "price", "up_limit", "down_limit", key, f"{key}_exit",
-                                   *chosen]].copy()
-    ranks = [scored.groupby("date")[n].rank(pct=True) * s for n, s in chosen.items()]
-    scored["score"] = pd.concat(ranks, axis=1).mean(axis=1)
+    scored = score_frame(panel[test_mask], key, chosen)
     if offset == 0:
         out["hold"] = hold_while_ranked(scored, index, inflation, top_k)
     test = scored[scored[key].notna()].dropna(subset=["score"])
@@ -377,6 +373,18 @@ def _evaluate(panel, key, label, h, offset, train_mask, test_mask, calendar, ind
     out["monthly"] = monthly_returns(picks, calendar, h, offset, index, inflation)
     out["monthly_random"] = monthly_returns(everyone, calendar, h, offset, index, inflation)
     return out, picks[["date", "symbol", "score", "ret"]].rename(columns={"ret": "return"})
+
+
+def score_frame(rows: pd.DataFrame, key: str, chosen: dict[str, int]) -> pd.DataFrame:
+    """Every share of the given days with its short-term score: the mean of the chosen facts'
+    signed ranks within the day. Shares in a buy queue are scored too: they can't be bought,
+    but a holder keeps them. The queue flags may themselves be chosen facts; each column is
+    taken once."""
+    columns = list(dict.fromkeys(["date", "symbol", "price", "up_limit", "down_limit", key, f"{key}_exit", *chosen]))
+    scored = rows[columns].copy()
+    ranks = [scored.groupby("date")[n].rank(pct=True) * sign for n, sign in chosen.items()]
+    scored["score"] = pd.concat(ranks, axis=1).mean(axis=1)
+    return scored
 
 
 def _selected(rows: pd.DataFrame, key: str, score: str | None, top_k: int) -> pd.DataFrame:

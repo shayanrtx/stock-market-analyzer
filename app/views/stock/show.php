@@ -6,7 +6,8 @@
  *  @var list<array> $flowDaily
  *  @var list<array> $holdings the user's open positions in this symbol
  *  @var array $portfolio      default portfolio (for the transaction drawer)
- *  @var array<string, float> $fees */
+ *  @var array<string, float> $fees
+ *  @var float $riskFree  annual risk-free rate (fraction) */
 use Sabadgardan\Analysis\Potential\Factor;
 use Sabadgardan\Market\Field;
 use Sabadgardan\Signals\SignalEngine;
@@ -68,6 +69,18 @@ $tiles = [
     ['rsi', 'RSI ۱۴', $v->num($t['rsi14'], 0), 'قدرت خریدار ' . $v->num($r->flow['buyer_power'] ?? null, 2)],
     ['annual_returns', 'بازده ۱ ساله', $v->pct($r->returns['1y'] ?? null), 'رشد مرکب سالانه ' . $v->pct($h['cagr_pct'] ?? null)],
 ];
+$cashLike = $class->isCashLike();
+if ($cashLike) {
+    // A fixed-income fund or bond is judged by its yield against the risk-free rate, not by growth signals.
+    $ret1y = $r->returns['1y'] ?? null;
+    $tiles = [
+        ['annual_returns', 'بازده ۱ ساله', $v->pct($ret1y), 'رشد مرکب سالانه از ابتدا ' . $v->pct($h['cagr_pct'] ?? null)],
+        ['sharpe', 'در برابر نرخ بدون ریسک', $ret1y !== null ? $v->pct($ret1y - $riskFree * 100, 1) : '<span class="faint">-</span>',
+            'نرخ بدون ریسک تنظیمات: ' . $v->pct($riskFree * 100, 0, false, false)],
+        ['volatility', 'نوسان سالانه', $v->pct($h['volatility_annual_pct'] ?? null, 1, false, false), 'هرچه کمتر، به سپرده نزدیک‌تر'],
+        ['max_drawdown', 'بیشترین افت تاریخی', $v->pct($h['max_drawdown_pct'] ?? null, 1), 'از ' . $v->e($h['first_date'] ?? '')],
+    ];
+}
 ?>
 <section class="kpis" style="--cols:<?= \Sabadgardan\View\View::kpiColumns(count($tiles)) ?>">
   <?php foreach ($tiles as [$key, $label, $value, $sub]): ?>
@@ -101,6 +114,7 @@ $tiles = [
 <?= $v->card('نمودار قیمت (تعدیل‌شده)', $v->chart(Charts::pricePanels($b->history), 'tall'), 12, 'price_chart',
     'شمعی + میانگین‌های ۲۰/۵۰/۲۰۰ و بولینگر · حجم · RSI · MACD — با اسکرول یا لغزنده بزرگ‌نمایی کنید') ?>
 
+<?php if (!$cashLike): ?>
 <?= $v->card('پتانسیل رشد', $v->chart(Charts::gauge($p->score), 'short'), 4, 'gauge') ?>
 <?php ob_start(); ?>
 <div class="summary"><?= $v->e($p->summary) ?></div>
@@ -173,8 +187,9 @@ $tiles = [
   <div class="empty">قیمت نزدیک سقف تاریخی است یا حد ضرر قابل محاسبه نیست؛ طرح خرید معناداری تعریف نمی‌شود.</div>
 <?php endif; ?>
 <?= $v->card('طرح معاملاتی و احتمال موفقیت', (string) ob_get_clean(), 5, 'trade_plan', 'بر اساس رفتار تاریخی همین نماد') ?>
+<?php endif; ?>
 <?= $v->card('جریان پول حقیقی (۶۰ جلسه)', $flowDaily ? $v->chart(Charts::moneyFlow($flowDaily, $b->raw), 'mid')
-    : '<div class="empty">داده‌ی تاریخی حقیقی/حقوقی در دسترس نیست.</div>', 7, 'money_flow') ?>
+    : '<div class="empty">داده‌ی تاریخی حقیقی/حقوقی در دسترس نیست.</div>', $cashLike ? 12 : 7, 'money_flow') ?>
 
 <?php
 $f = $r->flow;

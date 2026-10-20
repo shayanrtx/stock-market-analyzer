@@ -49,6 +49,7 @@ final class StockController extends Controller
             'holdings' => $this->holdings($uid, $code),
             'portfolio' => $this->app->portfolios()->defaultPortfolio($uid),
             'fees' => $settings->fees($uid)->all(),
+            'riskFree' => $settings->float($uid, 'risk_free_annual'),
             'nav' => 'stock', 'tour' => true,
         ]);
     }

@@ -57,6 +57,7 @@ textarea { width:100%; min-height:220px; font:inherit; padding:8px; border:1px s
            border-radius:6px; background:var(--bg); color:var(--fg); direction:rtl; }
 .stats { display:flex; gap:24px; flex-wrap:wrap; } .stats b { display:block; font-size:20px; }
 .bar { height:8px; background:var(--accent); border-radius:4px; }
+.track { width:80px; background:var(--line); border-radius:4px; }
 ul.warn { margin:0; padding-inline-start:18px; } ul.warn li { color:var(--down); }
 """
 
@@ -319,7 +320,7 @@ def portfolio_page(cdn: TsetmcClient, path: Path) -> str:
 
     if r.sectors:
         sec = "".join(f"<tr><td>{e(n)}</td><td class=num>{w:.1f}%</td>"
-                      f'<td style="width:45%"><div class=bar style="width:{min(w, 100):.1f}%"></div></td></tr>'
+                      f'<td><div class=track><div class=bar style="width:{min(w, 100):.1f}%"></div></div></td></tr>'
                       for n, w in r.sectors.items())
         parts.append(card("ترکیب صنعت", f"<table>{sec}</table>"))
     if r.risk:
@@ -440,7 +441,8 @@ def _potential_cell(score: float | None, label: str) -> str:
     if score is None:
         return "<td>-</td>"
     cls = "up" if score >= 55 else "down" if score <= 45 else ""
-    return f'<td class="{cls}">{score:.0f} — {e(label)}</td>'
+    short = label.replace("پتانسیل رشد ", "").replace(" (ریسک افت)", "").replace(" / خنثی", "")
+    return f'<td class="{cls}" title="{e(label)}">{score:.0f} {e(short)}</td>'
 
 
 def _stock_link(symbol: str) -> str:

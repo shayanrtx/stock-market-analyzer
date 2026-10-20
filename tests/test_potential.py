@@ -90,7 +90,11 @@ def test_assess_uptrend_vs_downtrend():
     assert p_up.score > 55 > 45 > p_down.score
     assert p_up.strengths and p_down.weaknesses
     names = {f.name for f in p_up.factors}
-    assert {"روند بلندمدت", "ارزش‌گذاری", "موقعیت‌های مشابه در گذشته"} <= names
+    assert {"روند اولیه (Primary trend)", "ارزش‌گذاری", "الگوهای مشابه تاریخی"} <= names
+    assert abs(50 + sum(f.contribution for f in p_up.factors) - p_up.score) < 1e-9
+    assert p_up.scenarios["bear"] <= p_up.scenarios["base"] <= p_up.scenarios["bull"]
+    assert 0 <= p_up.probability_up <= 1 and "ارزیابی کلی" in p_up.summary
+    assert p_up.levels["stop"] < p_up.levels["price"]
     assert p_down.levels["target"] is not None and p_down.levels["upside_pct"] > 0
     assert 0 <= p_up.score <= 100 and 0 <= p_down.score <= 100
 
@@ -134,3 +138,25 @@ def test_cli_potential(monkeypatch, capsys):
     assert main(["--cache-dir", "", "--json", "deep", "فملی"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert 0 <= data["potential"]["score"] <= 100
+
+
+def test_stop_is_structural_when_support_is_near_else_atr():
+    idx = pd.bdate_range("2025-01-01", periods=80)
+    close = pd.Series(1000.0, index=idx)
+    df = pd.DataFrame({"close": close, "low": close * 0.99, "high": close * 1.01})
+    stats = {"high_52w": 1200.0, "ath": 1300.0}
+    df.loc[idx[-30], "low"] = 980  # 2% under it (960.4) is inside the 2.5 ATR budget (950)
+    near = pot._levels(df, 1000.0, None, stats, atr=20)
+    assert near["stop"] == pytest.approx(980 * 0.98)
+    assert near["reward_risk"] == pytest.approx((1200 - 1000) / (1000 - 980 * 0.98))
+    df.loc[idx[-30], "low"] = 700  # far support: risk capped by the ATR stop
+    far = pot._levels(df, 1000.0, None, stats, atr=20)
+    assert far["stop"] == pytest.approx(950)
+    assert far["reward_risk"] == pytest.approx(200 / 50)
+
+
+def test_partial_first_year_is_dropped():
+    df = daily_history_frame(make_daily_rows(600, drift=0.003))
+    years = list(pot.history_stats(df)["annual_returns"])
+    first_year_sessions = sum(1 for d in df.index if pot.gregorian_to_jalali(d.year, d.month, d.day)[0] == years[0])
+    assert first_year_sessions >= 40

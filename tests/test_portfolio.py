@@ -65,12 +65,13 @@ def test_analyze_portfolio():
     assert by["الف"].cost_pnl == pytest.approx((by["الف"].close - 5000) * 1000)
     assert r.cost_pnl == pytest.approx(by["الف"].cost_pnl)
     assert set(r.sectors) == {"فلزات اساسی", "خودرو"}
-    assert r.risk["volatility_annual_pct"] > 0 and r.risk["max_drawdown_pct"] <= 0
+    assert r.metrics["volatility_annual_pct"] > 0 and r.metrics["max_drawdown_pct"] <= 0
+    assert by["الف"].advice is not None and by["الف"].stop_price is not None
     assert any("ناموجود" in w for w in r.warnings)
     assert any("تمرکز" in w for w in r.warnings)  # الف dominates the value
 
     text = portfolio_text(r)
-    assert "ارزش پرتفو" in text and "ترکیب صنعت" in text
+    assert "ارزش سبد" in text and "ترکیب صنعت" in text and "اقدام پیشنهادی" in text
 
 
 def test_portfolio_page(tmp_path):

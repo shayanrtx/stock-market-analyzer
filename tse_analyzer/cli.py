@@ -1,10 +1,11 @@
-"""Command line entry point: ``tse-analyzer {search,analyze,potential,market,screen,portfolio,doctor,serve}``."""
+"""Command line entry point: ``tse-analyzer {search,analyze,potential,market,screen,portfolio,live,doctor,serve}``."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+import time
 from dataclasses import asdict
 
 from . import doctor, portfolio, potential, report, screener
@@ -98,6 +99,33 @@ def cmd_portfolio(client: TsetmcClient, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_live(client: TsetmcClient, args: argparse.Namespace) -> int:
+    from .live import LiveEngine
+
+    symbols = args.symbols or [h.symbol for h in portfolio.load_holdings(args.file)
+                               if h.symbol.lower() not in portfolio.CASH_NAMES]
+    if not symbols:
+        print("نمادی برای رصد نیست: نماد بدهید یا فایل پرتفو را پر کنید.", file=sys.stderr)
+        return 1
+    # Live data must never come from the disk cache.
+    live_client = TsetmcClient(timeout=args.timeout, cache_dir=None, max_retries=1)
+    gateway = TseGatewayClient(timeout=args.timeout, cache_dir=None, max_retries=1)
+    engine = LiveEngine(live_client, symbols, interval=args.interval, gateway=gateway)
+    marks = {1: "▲", -1: "▼", 0: "•"}
+    print(f"رصد {len(symbols)} نماد هر {args.interval:.0f} ثانیه (Ctrl+C برای خروج)")
+    try:
+        while True:
+            for ins in reversed(engine.tick()):
+                level = "!" * ins.severity
+                print(f"{ins.at:%H:%M:%S} {marks[ins.direction]} {level:<3} {ins.symbol:<10} {ins.title}: {ins.detail}",
+                      flush=True)
+            state = engine.state()
+            print(f"[{state['updated']}] {state['phase_label']}", file=sys.stderr, flush=True)
+            time.sleep(args.interval if engine.phase.is_live else max(args.interval, 300))
+    except KeyboardInterrupt:
+        return 0
+
+
 def cmd_doctor(client: TsetmcClient, args: argparse.Namespace) -> int:
     results = doctor.run(args.symbol, args.out, args.timeout)
     print(doctor.format_results(results))
@@ -110,7 +138,7 @@ def cmd_serve(client: TsetmcClient, args: argparse.Namespace) -> int:
 
     web.serve(args.host, args.port, client,
               TseGatewayClient(timeout=args.timeout, cache_dir=args.cache_dir or None),
-              args.portfolio)
+              args.portfolio, args.watchlist, args.live_interval)
     return 0
 
 
@@ -167,6 +195,12 @@ def build_parser() -> argparse.ArgumentParser:
     pf.add_argument("--file", default="portfolio.csv", help="فایل پرتفو (هر خط: نماد تعداد [میانگین خرید])")
     pf.set_defaults(func=cmd_portfolio)
 
+    lv = sub.add_parser("live", help="رصد زنده‌ی بازار و پیش‌گشایش (هشدار صف، پول هوشمند، حجم مشکوک و ...)")
+    lv.add_argument("symbols", nargs="*", help="نمادها (پیش‌فرض: نمادهای پرتفو)")
+    lv.add_argument("--file", default="portfolio.csv")
+    lv.add_argument("--interval", type=float, default=45.0, help="فاصله‌ی به‌روزرسانی به ثانیه")
+    lv.set_defaults(func=cmd_live)
+
     d = sub.add_parser("doctor", help="تست اتصال و ساختار پاسخ همه‌ی endpointها")
     d.add_argument("--symbol", default="فولاد")
     d.add_argument("--out", default="diagnostics")
@@ -176,6 +210,8 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--host", default="127.0.0.1")
     w.add_argument("--port", type=int, default=8000)
     w.add_argument("--portfolio", default="portfolio.csv", help="فایل پرتفو")
+    w.add_argument("--watchlist", default="watchlist.txt", help="فایل دیده‌بان رصد زنده")
+    w.add_argument("--live-interval", type=float, default=45.0, help="فاصله‌ی به‌روزرسانی رصد زنده (ثانیه)")
     w.set_defaults(func=cmd_serve)
     return p
 

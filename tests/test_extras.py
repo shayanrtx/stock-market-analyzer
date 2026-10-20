@@ -82,23 +82,24 @@ def test_doctor_reports_missing_fields_and_saves_samples(tmp_path):
     assert "OK" in doctor.format_results(list(results.values()))
 
 
-def test_web_stock_page_and_chart():
+def test_web_stock_page_has_charts_and_reasoning():
     session = FakeSession({
         "GetInstrumentSearch": SEARCH,
         "GetClosingPriceDailyList": FakeResponse(200, {"closingPriceDaily": make_daily_rows()}),
         "GetClosingPriceInfo": FakeResponse(200, {"closingPriceInfo": {}}),
         "GetClientType": FakeResponse(200, {"clientType": {}}),
     })
-    out = web.stock_page(TsetmcClient(session=session), "فولاد")
-    assert "<svg" in out and "polyline" in out
-    assert "فولاد مباركه اصفهان" in out and "سیگنال‌ها" in out
+    out = web.stock_page(TsetmcClient(session=session, max_retries=0), "فولاد")
+    assert out.count('data-chart="') >= 6
+    assert "فولاد مباركه اصفهان" in out and "جمع‌بندی تحلیلی" in out and "دلایل تخصصی" in out
+    # chart JSON is embedded safely
+    assert "</script><script" not in out.split('type="application/json"')[1][:50]
 
 
 def test_web_error_page_when_unreachable():
     cdn = TsetmcClient(session=FakeSession({}), max_retries=0)
     gw = TseGatewayClient(session=FakeSession({}), max_retries=0)
-    out = web.home_page(cdn, gw)
-    assert "tse-analyzer doctor" in out
+    assert "tse-analyzer doctor" in web.market_page(cdn, gw)
 
 
 def test_web_escapes_user_input():

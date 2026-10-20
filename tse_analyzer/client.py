@@ -42,6 +42,8 @@ ADJUST_TOLERANCE = 0.002  # ignore yesterday/close mismatches from tick rounding
 FLOW_BOURSE = 1
 FLOW_FARABOURSE = 2
 
+TEDPIX = "32097828799138957"  # شاخص کل بورس
+
 # insCode of the 7 selected TSE indices (verified 1405/04/24).
 SELECTED_BOURSE_INDICES = {
     "32097828799138957": "شاخص کل",
@@ -175,6 +177,20 @@ class TsetmcClient:
         kind = "SelectedIndexes" if selected_only else "All"
         return self.get(f"Index/GetIndexB1LastAll/{kind}/{flow}").get("indexB1") or []
 
+    def index_history(self, ins_code: str = TEDPIX) -> pd.Series:
+        """Daily closing values of an index, oldest first (not in the endpoint reference; verify with doctor)."""
+        data = self.get(f"Index/GetIndexB2History/{ins_code}")
+        rows = _as_list(field(data, "indexB2") if isinstance(data, dict) else data)
+        points = {}
+        for r in rows:
+            day = field(r, "dEven")
+            value = field(r, "xNivInuClMresIbs", "xDrNivJIdx004", "indexValue", "close")
+            try:
+                points[pd.to_datetime(str(int(day)), format="%Y%m%d")] = float(value)
+            except (TypeError, ValueError):
+                continue
+        return pd.Series(points, dtype=float).sort_index()
+
     def index_effect(self, flow: int = FLOW_BOURSE, top: int = 7) -> list[dict]:
         return self.get(f"Index/GetInstEffect/0/{flow}/{top}").get("instEffect") or []
 
@@ -276,6 +292,20 @@ def adjust_prices(df: pd.DataFrame) -> tuple[pd.DataFrame, list[tuple[pd.Timesta
             out[col] = out[col] * cum
     events = [(d, float(f)) for d, f in factors[is_event].items()]
     return out, events
+
+
+def instrument_type(isin: str | None) -> str:
+    """Broad asset class from the ISIN prefix (see ENDPOINTS.md, «تشخیص نوع ابزار مالی»)."""
+    isin = (isin or "").upper()
+    if isin.startswith("IRT"):
+        return "صندوق"
+    if isin.startswith("IRB"):
+        return "اوراق"
+    if isin.startswith(("IRO9", "IRS", "IROF")):
+        return "اختیار معامله"
+    if isin.startswith("IRO"):
+        return "سهام"
+    return "نامشخص"
 
 
 def _normalize_fa(text: str) -> str:

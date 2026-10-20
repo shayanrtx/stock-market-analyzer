@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field as dc_field
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
-from .client import FLOW_BOURSE, TseGatewayClient, TsetmcClient, TsetmcError
+from .client import FLOW_BOURSE, TEDPIX, TseGatewayClient, TsetmcClient, TsetmcError
 
 SAMPLE_ITEMS = 3
 
@@ -70,6 +71,11 @@ def build_probes(cdn: TsetmcClient, gw: TseGatewayClient, symbol: str) -> list[P
               ["insCode", "lVal30", "xDrNivJIdx004", "xVarIdxJRfV"], "indexB1"),
         Probe("cdn_index_effect", lambda: cdn.get(f"Index/GetInstEffect/0/{FLOW_BOURSE}/7"),
               ["insCode", "instrument", "instEffectValue"], "instEffect"),
+        Probe("cdn_index_history", lambda: cdn.get(f"Index/GetIndexB2History/{TEDPIX}"),
+              ["dEven", "xNivInuClMresIbs"], "indexB2"),
+        Probe("cdn_static_threshold",
+              lambda: cdn.get(f"MarketData/GetStaticThreshold/{ins_code()}/{date.today():%Y%m%d}"),
+              ["psGelStaMax", "psGelStaMin"], "staticThreshold"),
         Probe("gw_market_date", lambda: gw.get("api/v1/PublicData/MarketDate/fa"),
               ["stockTypeId", "isOpen"]),
         Probe("gw_market_summary", lambda: gw.get("InstrumentProvider/api/v1/Instrument/MarketSummary/fa"),

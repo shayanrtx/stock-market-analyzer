@@ -30,6 +30,7 @@ class StockAnalysis:
     money_flow: dict[str, float | None]
     signals: list[Signal] = field(default_factory=list)
     ins_code: str = ""
+    isin: str = ""
     # (date, factor) of capital-increase/dividend adjustments applied to the history
     adjustments: list = field(default_factory=list)
 
@@ -242,5 +243,6 @@ def fetch_and_analyze(
         optional(client.closing_price_info),
     )
     result.ins_code = ins_code
+    result.isin = str(inst.get("cIsin") or "")
     result.adjustments = adjustments
     return result, history

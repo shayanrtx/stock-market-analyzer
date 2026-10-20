@@ -1,13 +1,17 @@
-"""Portfolio analysis: value, daily P/L, per-holding signals, sector mix and risk.
+"""Portfolio analysis for a portfolio manager.
+
+Value and P/L, allocation by holding/sector/asset type, risk against the index
+(see :mod:`risk`), liquidity and queue status, growth potential per holding and a
+suggested action with target weight (see :mod:`advisor`).
 
 Holdings are plain text, one per line: ``symbol quantity [avg_cost]``. Fields may be
 separated by tab, semicolon, spaces or a comma; ``1,240`` style thousands separators
 and Persian digits are accepted. ``avg_cost`` is in rial (the unit TSETMC uses).
+A line ``نقد <amount in rial>`` records cash.
 """
 
 from __future__ import annotations
 
-import math
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field as dc_field
@@ -15,12 +19,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from . import risk as risk_mod
+from .advisor import MAX_POSITION_WEIGHT, Advice, advise
+from .client import TsetmcClient, TsetmcError, field, instrument_type
+from .indicators import sma
 from .potential import fetch_potential
-from .client import TsetmcClient, TsetmcError
 
-TRADING_DAYS = 250
-MAX_POSITION_WEIGHT = 25.0  # percent; above this a single holding is flagged
 MAX_SECTOR_WEIGHT = 40.0
+CASH_NAMES = {"نقد", "نقدی", "وجه نقد", "cash"}
 
 _DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٬", "01234567890123456789,")
 # A comma is a field separator unless it is a thousands separator (followed by exactly 3 digits).
@@ -39,11 +45,13 @@ class Position:
     holding: Holding
     name: str = ""
     sector: str = ""
+    isin: str = ""
+    asset_type: str = ""
     status: str | None = None
     close: float | None = None
     day_change_pct: float | None = None
     value: float = 0.0
-    weight: float = 0.0
+    weight: float = 0.0  # percent of NAV (cash included)
     day_pnl: float = 0.0
     cost_pnl: float | None = None
     cost_pnl_pct: float | None = None
@@ -52,22 +60,47 @@ class Position:
     signals: int = 0
     rsi: float | None = None
     buyer_power: float | None = None
+    above_sma200: bool | None = None
     potential_score: float | None = None
     potential_label: str = ""
+    probability_up: float | None = None
     upside_pct: float | None = None
+    target_price: float | None = None
+    stop_price: float | None = None
+    stop_pct: float | None = None
+    reward_risk: float | None = None
+    avg_daily_value: float | None = None
+    days_to_exit: float | None = None
+    queue: str = ""  # «صف خرید» / «صف فروش» / ""
+    risk_share: float | None = None  # percent of portfolio variance
+    return_1y_pct: float | None = None
+    volatility_pct: float | None = None
+    advice: Advice | None = None
     error: str = ""
 
 
 @dataclass
 class PortfolioReport:
     positions: list[Position]
-    total_value: float
+    nav: float  # holdings + cash
+    invested: float
+    cash: float
     day_pnl: float
     day_pct: float | None
     cost_pnl: float | None
     sectors: dict[str, float]
-    risk: dict[str, float | None]
+    asset_types: dict[str, float]
+    concentration: dict[str, float]
+    risk: risk_mod.PortfolioRisk | None
     warnings: list[str] = dc_field(default_factory=list)
+
+    @property
+    def total_value(self) -> float:
+        return self.nav
+
+    @property
+    def metrics(self) -> dict[str, float | None]:
+        return self.risk.metrics if self.risk else {}
 
 
 # ------------------------------------------------------------------ parsing
@@ -122,18 +155,28 @@ def save_holdings(path: str | Path, holdings: list[Holding]) -> None:
 # ----------------------------------------------------------------- analysis
 
 def analyze_portfolio(client: TsetmcClient, holdings: list[Holding], workers: int = 4) -> PortfolioReport:
-    def one(h: Holding) -> tuple[Position, pd.Series | None]:
+    cash = sum(h.quantity for h in holdings if h.symbol.lower() in CASH_NAMES)
+    stocks = [h for h in holdings if h.symbol.lower() not in CASH_NAMES]
+    try:
+        benchmark = client.index_history()
+    except TsetmcError:
+        benchmark = None
+
+    def one(h: Holding) -> tuple[Position, pd.DataFrame | None]:
         pos = Position(h)
         try:
-            a, pot, history = fetch_potential(client, h.symbol)
+            a, pot, history = fetch_potential(client, h.symbol, benchmark=benchmark)
         except TsetmcError as exc:
             pos.error = str(exc)
             return pos, None
         pos.name, pos.status = a.name, a.status
+        pos.isin, pos.asset_type = a.isin, instrument_type(a.isin)
         pos.close = a.last_close
         pos.verdict, pos.score, pos.signals = a.verdict, a.score, len(a.signals)
         pos.rsi = a.indicators.get("rsi14")
         pos.buyer_power = a.money_flow.get("buyer_power")
+        s200 = sma(history["close"], 200).iloc[-1]
+        pos.above_sma200 = bool(history["close"].iloc[-1] > s200) if pd.notna(s200) else None
         prev = _previous_close(history)
         if pos.close and prev:
             pos.day_change_pct = pos.close / prev * 100 - 100
@@ -144,59 +187,87 @@ def analyze_portfolio(client: TsetmcClient, holdings: list[Holding], workers: in
             pos.cost_pnl_pct = pos.close / h.avg_cost * 100 - 100
         pos.sector = pot.sector
         pos.potential_score, pos.potential_label = pot.score, pot.label
-        pos.upside_pct = pot.levels["upside_pct"]
-        return pos, history["close"] * h.quantity
+        pos.probability_up = pot.probability_up
+        lv = pot.levels
+        pos.upside_pct, pos.target_price = lv["upside_pct"], lv["target"]
+        pos.stop_price, pos.stop_pct, pos.reward_risk = lv.get("stop"), lv.get("stop_pct"), lv["reward_risk"]
+        liq = risk_mod.liquidity(history, pos.value)
+        pos.avg_daily_value, pos.days_to_exit = liq["avg_daily_value"], liq["days_to_exit"]
+        pos.queue = _queue(client, a.ins_code)
+        return pos, history
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        results = list(pool.map(one, holdings))
+        results = list(pool.map(one, stocks))
 
     positions = [p for p, _ in results]
-    total = sum(p.value for p in positions)
+    invested = sum(p.value for p in positions)
+    nav = invested + cash
     for p in positions:
-        p.weight = p.value / total * 100 if total else 0.0
+        p.weight = p.value / nav * 100 if nav else 0.0
     positions.sort(key=lambda p: p.value, reverse=True)
 
-    sectors: dict[str, float] = {}
+    values = {p.holding.symbol: h["close"] * p.holding.quantity
+              for p, h in results if h is not None and p.value}
+    portfolio_risk = risk_mod.analyze(values, benchmark)
+    if portfolio_risk:
+        for p in positions:
+            p.risk_share = portfolio_risk.risk_contribution.get(p.holding.symbol)
+            sym = portfolio_risk.per_symbol.get(p.holding.symbol, {})
+            p.return_1y_pct = sym.get("return_period_pct")
+            p.volatility_pct = sym.get("volatility_annual_pct")
+
     for p in positions:
-        if p.value:
-            key = p.sector or "نامشخص"
-            sectors[key] = sectors.get(key, 0.0) + p.weight
-    sectors = dict(sorted(sectors.items(), key=lambda kv: kv[1], reverse=True))
+        if not p.error:
+            p.advice = advise(p.weight, p.potential_score, p.probability_up, p.above_sma200,
+                              p.risk_share, p.days_to_exit, p.status, p.reward_risk)
+
+    sectors = _group(positions, lambda p: p.sector or "نامشخص")
+    asset_types = _group(positions, lambda p: p.asset_type or "نامشخص")
+    if cash:
+        asset_types["نقد"] = cash / nav * 100
 
     day_pnl = sum(p.day_pnl for p in positions)
-    prev_total = total - day_pnl
+    prev_nav = nav - day_pnl
     with_cost = [p for p in positions if p.cost_pnl is not None]
     return PortfolioReport(
         positions=positions,
-        total_value=total,
+        nav=nav,
+        invested=invested,
+        cash=cash,
         day_pnl=day_pnl,
-        day_pct=day_pnl / prev_total * 100 if prev_total else None,
+        day_pct=day_pnl / prev_nav * 100 if prev_nav else None,
         cost_pnl=sum(p.cost_pnl for p in with_cost) if with_cost else None,
         sectors=sectors,
-        risk=portfolio_risk([s for _, s in results if s is not None]),
+        asset_types=asset_types,
+        concentration=risk_mod.concentration([p.weight for p in positions]),
+        risk=portfolio_risk,
         warnings=_warnings(positions, sectors),
     )
 
 
-def portfolio_risk(value_series: list[pd.Series]) -> dict[str, float | None]:
-    """Risk of the *current* holdings replayed over the last year of adjusted prices."""
-    if not value_series:
-        return {}
-    frame = pd.concat(value_series, axis=1).sort_index().ffill().iloc[-TRADING_DAYS:]
-    # Use only days where every holding already traded, so new listings don't look like jumps.
-    total = frame.dropna().sum(axis=1)
-    if len(total) < 20:
-        return {}
-    rets = total.pct_change().dropna()
-    drawdown = total / total.cummax() - 1
-    return {
-        "volatility_annual_pct": float(rets.std() * math.sqrt(TRADING_DAYS) * 100),
-        "max_drawdown_pct": float(drawdown.min() * 100),
-        "return_1m_pct": _ret(total, 21),
-        "return_3m_pct": _ret(total, 63),
-        "return_1y_pct": _ret(total, len(total) - 1),
-        "days": float(len(total)),
-    }
+def _queue(client: TsetmcClient, ins_code: str) -> str:
+    """Buy/sell queue from the first order-book level: no sellers = buy queue and vice versa."""
+    try:
+        levels = client.best_limits(ins_code)
+    except TsetmcError:
+        return ""
+    first = next((lv for lv in levels if field(lv, "number") in (1, "1")), levels[0] if levels else None)
+    if not first:
+        return ""
+    bid, ask = field(first, "pMeDem", default=0) or 0, field(first, "pMeOf", default=0) or 0
+    if bid and not ask:
+        return "صف خرید"
+    if ask and not bid:
+        return "صف فروش"
+    return ""
+
+
+def _group(positions: list[Position], key) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for p in positions:
+        if p.value:
+            out[key(p)] = out.get(key(p), 0.0) + p.weight
+    return dict(sorted(out.items(), key=lambda kv: kv[1], reverse=True))
 
 
 def _warnings(positions: list[Position], sectors: dict[str, float]) -> list[str]:
@@ -208,17 +279,19 @@ def _warnings(positions: list[Position], sectors: dict[str, float]) -> list[str]
             continue
         if p.status and p.status != "مجاز":
             out.append(f"{s}: وضعیت نماد «{p.status}» است")
+        if p.queue == "صف فروش":
+            out.append(f"{s}: در صف فروش است؛ خروج فوری ممکن نیست")
         if p.weight > MAX_POSITION_WEIGHT:
-            out.append(f"{s}: {p.weight:.0f}٪ از پرتفو در یک نماد (تمرکز بالا)")
-        if p.verdict.startswith("نزولی"):
-            out.append(f"{s}: سیگنال {p.verdict}")
+            out.append(f"{s}: {p.weight:.0f}٪ از سبد در یک نماد (تمرکز بالا)")
         if p.potential_score is not None and p.potential_score <= 35:
             out.append(f"{s}: {p.potential_label} (امتیاز {p.potential_score:.0f})")
-        if p.rsi is not None and p.rsi >= 75:
-            out.append(f"{s}: RSI={p.rsi:.0f} اشباع خرید")
+        if p.days_to_exit is not None and p.days_to_exit > 5:
+            out.append(f"{s}: خروج کامل حدود {p.days_to_exit:.0f} جلسه طول می‌کشد (نقدشوندگی پایین)")
+        if p.close and p.stop_price and p.close < p.stop_price:
+            out.append(f"{s}: قیمت زیر حد ضرر مبتنی بر نوسان است")
     for name, w in sectors.items():
         if w > MAX_SECTOR_WEIGHT:
-            out.append(f"صنعت «{name}»: {w:.0f}٪ از پرتفو (تمرکز صنعتی بالا)")
+            out.append(f"صنعت «{name}»: {w:.0f}٪ از سبد (تمرکز صنعتی بالا)")
     return out
 
 
@@ -226,9 +299,3 @@ def _previous_close(history: pd.DataFrame) -> float | None:
     if "yesterday" in history.columns and history["yesterday"].iloc[-1]:
         return float(history["yesterday"].iloc[-1])
     return float(history["close"].iloc[-2]) if len(history) > 1 else None
-
-
-def _ret(series: pd.Series, periods: int) -> float | None:
-    if periods <= 0 or len(series) <= periods:
-        return None
-    return float(series.iloc[-1] / series.iloc[-1 - periods] * 100 - 100)

@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tse-analyzer"
-version = "0.1.0"
-description = "Tehran Stock Exchange (TSETMC) market analyzer"
+version = "0.2.0"
+description = "Portfolio-manager assistant for the Tehran Stock Exchange (TSETMC)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "requests>=2.31",
     "pandas>=2.0",
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
@@ -20,7 +21,10 @@ dev = ["pytest>=8"]
 tse-analyzer = "tse_analyzer.cli:main"
 
 [tool.setuptools]
-packages = ["tse_analyzer"]
+packages = ["tse_analyzer", "tse_analyzer.live", "tse_analyzer.web"]
+
+[tool.setuptools.package-data]
+"tse_analyzer.web" = ["static/*.css", "static/*.js", "static/fonts/*.woff2", "static/licenses/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

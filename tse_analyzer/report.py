@@ -103,38 +103,45 @@ def screen_text(rows: list[SmartMoneyRow] | list[MoverRow]) -> str:
 
 
 def portfolio_text(r: PortfolioReport) -> str:
+    m = r.metrics
     lines = [
-        f"ارزش پرتفو: {fmt_num(_to_mt(r.total_value), 1)} م.ت   "
+        f"ارزش سبد (NAV): {fmt_num(_to_mt(r.nav), 1)} م.ت   نقد: {fmt_num(_to_mt(r.cash), 1)} م.ت   "
         f"سود/زیان امروز: {fmt_num(_to_mt(r.day_pnl), 1)} م.ت ({fmt_pct(r.day_pct)})",
     ]
     if r.cost_pnl is not None:
         lines.append(f"سود/زیان نسبت به قیمت خرید: {fmt_num(_to_mt(r.cost_pnl), 1)} م.ت")
-    lines += ["", f"  {'نماد':<12} {'تعداد':>9} {'قیمت':>9} {'امروز':>8} {'وزن':>6}  سیگنال / پتانسیل رشد"]
+    if m:
+        lines += [
+            "",
+            f"عملکرد و ریسک ({r.risk.days} جلسه، ترکیب فعلی روی قیمت‌های تعدیل‌شده):",
+            f"  بازده دوره {fmt_pct(m.get('return_period_pct'))}"
+            + (f"   شاخص کل {fmt_pct(m.get('benchmark_return_period_pct'))}" if "benchmark_return_period_pct" in m else ""),
+            f"  نوسان سالانه {fmt_num(m.get('volatility_annual_pct'), 1)}%   بیشترین افت {fmt_num(m.get('max_drawdown_pct'), 1)}%   "
+            f"شارپ {fmt_num(m.get('sharpe'), 2)}   بتا {fmt_num(m.get('beta'), 2)}",
+            f"  VaR روزانه ۹۵٪: {fmt_num(m.get('var95_1d_pct'), 2)}% "
+            f"({fmt_num(_to_mt(r.invested * (m.get('var95_1d_pct') or 0) / 100), 1)} م.ت)   "
+            f"تعداد مؤثر نمادها {fmt_num(r.concentration.get('effective_positions'), 1)}",
+        ]
+    lines += ["", f"  {'نماد':<12} {'وزن':>6} {'امروز':>8} {'پتانسیل':>8}  اقدام پیشنهادی"]
     for p in r.positions:
         if p.error:
-            lines.append(f"  {p.holding.symbol:<12} {fmt_num(p.holding.quantity):>9}  خطا: {p.error}")
+            lines.append(f"  {p.holding.symbol:<12} خطا: {p.error}")
             continue
+        advice = p.advice.label if p.advice else "-"
+        target = f" ← {p.advice.target_weight:.1f}%" if p.advice else ""
         lines.append(
-            f"  {p.holding.symbol:<12} {fmt_num(p.holding.quantity):>9} {fmt_num(p.close):>9} "
-            f"{fmt_pct(p.day_change_pct):>8} {p.weight:5.1f}%  {p.verdict} ({p.score:+d})"
-            + (f" / {p.potential_label} ({p.potential_score:.0f})" if p.potential_score is not None else "")
+            f"  {p.holding.symbol:<12} {p.weight:5.1f}% {fmt_pct(p.day_change_pct):>8} "
+            f"{fmt_num(p.potential_score):>8}  {advice}{target}"
+            + (f"  [{p.queue}]" if p.queue else "")
         )
+        if p.advice and p.advice.reasons:
+            lines.append(f"  {'':<12} " + "؛ ".join(p.advice.reasons))
     if r.sectors:
         lines += ["", "ترکیب صنعت:"]
         lines += [f"  {name:<30} {w:5.1f}%" for name, w in r.sectors.items()]
-    if r.risk:
-        k = r.risk
-        lines += [
-            "",
-            f"ریسک (ترکیب فعلی در {k['days']:.0f} روز اخیر، قیمت تعدیل‌شده):",
-            f"  نوسان سالانه {fmt_num(k['volatility_annual_pct'], 1)}%   "
-            f"بیشترین افت {fmt_num(k['max_drawdown_pct'], 1)}%",
-            f"  بازده یک ماه {fmt_pct(k.get('return_1m_pct'))}   سه ماه {fmt_pct(k.get('return_3m_pct'))}   "
-            f"دوره {fmt_pct(k.get('return_1y_pct'))}",
-        ]
     if r.warnings:
         lines += ["", "هشدارها:"] + [f"  ! {w}" for w in r.warnings]
-    lines += ["", "این خروجی تحلیل خودکار است و توصیه‌ی خرید یا فروش نیست."]
+    lines += ["", "این خروجی ابزار کمک تصمیم است و توصیه‌ی قطعی خرید یا فروش نیست."]
     return "\n".join(lines)
 
 

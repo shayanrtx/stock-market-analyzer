@@ -12,11 +12,12 @@ Everything is point in time: at date t the share's lagged sensitivity to each dr
 on the two years of weekly returns before t, and only driver moves up to t enter the
 pending effect (:class:`SymbolMacro`).
 
-Sources. Verified tgju slugs (they appear in the algotik-tse catalogue, which lists only slugs
-whose history endpoint was checked): ``price_dollar_rl``, ``ons`` (gold, USD per ounce),
-``sekee``. The others are tried in order and the log says which one answered; a CSV in the
-drivers folder (``<key>.csv``: date,value — Gregorian or Jalali dates) always takes precedence,
-so any series can be added by hand.
+Sources (``VERIFIED``): the tgju slugs ``price_dollar_rl``, ``ons`` (gold, USD per ounce) and
+``sekee`` appear in the algotik-tse catalogue; ``crypto-tether-irr``, ``crypto-bitcoin`` and
+``oil_brent`` answered with full histories on a live run from Iran (1405/07/28). Sources are
+tried in order and the log says which one answered; a CSV in the drivers folder
+(``<key>.csv``: date,value — Gregorian or Jalali dates) always takes precedence, so any series
+can be added by hand.
 """
 
 from __future__ import annotations
@@ -47,17 +48,18 @@ class Driver:
     key: str
     label: str
     sources: tuple[tuple[str, str], ...]  # (provider, id) tried in order
-    verified: bool
 
 
 DRIVERS = (
-    Driver("usd", "دلار آزاد", (("tgju", "price_dollar_rl"),), True),
-    Driver("gold", "انس طلا", (("tgju", "ons"),), True),
-    Driver("coin", "سکه امامی", (("tgju", "sekee"),), True),
-    Driver("usdt", "تتر", (("nobitex", "USDTIRT"), ("tgju", "crypto-tether-irr"), ("tgju", "crypto-tether")), False),
-    Driver("btc", "بیت‌کوین", (("nobitex", "BTCIRT"), ("tgju", "crypto-bitcoin")), False),
-    Driver("oil", "نفت برنت", (("tgju", "oil_brent"), ("fred", "DCOILBRENTEU")), False),
+    Driver("usd", "دلار آزاد", (("tgju", "price_dollar_rl"),)),
+    Driver("gold", "انس طلا", (("tgju", "ons"),)),
+    Driver("coin", "سکه امامی", (("tgju", "sekee"),)),
+    Driver("usdt", "تتر", (("tgju", "crypto-tether-irr"), ("nobitex", "USDTIRT"), ("tgju", "crypto-tether"))),
+    Driver("btc", "بیت‌کوین", (("tgju", "crypto-bitcoin"), ("nobitex", "BTCIRT"))),
+    Driver("oil", "نفت برنت", (("tgju", "oil_brent"), ("fred", "DCOILBRENTEU"))),
 )
+VERIFIED = {"tgju:price_dollar_rl", "tgju:ons", "tgju:sekee", "tgju:crypto-tether-irr", "tgju:crypto-bitcoin",
+            "tgju:oil_brent"}
 LABELS = {d.key: d.label for d in DRIVERS}
 
 
@@ -105,7 +107,7 @@ def fetch_all(timeout: float = 20.0, drivers_dir: str | Path | None = "drivers",
         results.append(FetchResult(d.key, d.label, source, 0 if s is None else len(s),
                                    s.index[0].strftime("%Y-%m-%d") if s is not None and len(s) else "",
                                    s.index[-1].strftime("%Y-%m-%d") if s is not None and len(s) else "",
-                                   d.verified or source.startswith("csv:"), errors))
+                                   source in VERIFIED or source.startswith("csv:"), errors))
     return series, results
 
 

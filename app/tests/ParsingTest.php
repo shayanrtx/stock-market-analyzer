@@ -30,5 +30,13 @@ final class ParsingTest extends TestCase
         $this->assertSame('فلزات اساسی', $row['industry']);
         $this->assertNull(MarketData::watchRow(['instrumentName' => 'x']), 'no price, no row');
         $this->assertNull(MarketData::watchRow(['closingPrice' => 1, 'yesterdayPrice' => 1]));
+        // Shape of the live MarketWatchCash item (1405/07): lower-case industry name padded with spaces.
+        $live = MarketData::watchRow(['instrumentId' => 'IRO1APPE0001', 'instrumentName' => 'آپ',
+            'closingPrice' => ['value' => 9940, 'state' => 0], 'closingPriceChangePercent' => ['value' => -0.5, 'state' => 0],
+            'lastPriceChangePercent' => ['value' => -1.9, 'state' => 0], 'yesterdayPrice' => ['value' => 9990, 'state' => 0],
+            'tradeValue' => ['value' => 56842933490, 'state' => 0], 'industryname' => 'رایانه و فعالیت‌های وابسته به آن        ',
+            'securitiesname' => 'سهام عادی']);
+        $this->assertSame(['symbol' => 'آپ', 'industry' => 'رایانه و فعالیت‌های وابسته به آن', 'change' => -0.5,
+                           'value' => 56842933490.0], $live);
     }
 }

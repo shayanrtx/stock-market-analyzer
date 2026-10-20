@@ -157,7 +157,7 @@ final class MarketData
         if ($symbol === '') {
             return null;
         }
-        $change = Field::float($item, ['closingPricePercent', 'closingPriceChangePercent', 'closingPriceVarPercent']);
+        $change = Field::float($item, ['closingPriceChangePercent', 'closingPricePercent', 'closingPriceVarPercent']);
         if ($change === null) {
             $close = Field::float($item, ['closingPrice', 'closePrice']);
             $ref = Field::float($item, ['yesterdayPrice', 'priceYesterday', 'referencePrice']);

@@ -293,7 +293,12 @@ class TsetmcClient
         return Field::list($this->get("Codal/GetPreparedDataByInsCode/$top/$insCode", self::TTL_INTRADAY), 'preparedData');
     }
 
-    /** ETF record with the published NAVs (works for funds only). @return array<string, mixed> */
+    /**
+     * ETF record with the published NAVs (works for funds only): pRedTran (redemption), pSubTran
+     * (subscription), deven/hEven (when they were published).
+     *
+     * @return array<string, mixed>
+     */
     public function etf(string $insCode): array
     {
         return (array) Field::get($this->get("Fund/GetETFByInsCode/$insCode", self::TTL_INTRADAY), 'etf', []);

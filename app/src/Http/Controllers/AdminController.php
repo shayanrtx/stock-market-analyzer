@@ -268,11 +268,12 @@ final class AdminController extends Controller
             ['dEven', 'xNivInuClMresIbs']);
         if ($market->gateway) {
             $probe('دیده‌بان رسمی (tse.ir)', fn () => $market->gateway->marketWatch('Cash'),
-                ['instrumentName', ['closingPricePercent', 'closingPriceChangePercent', 'closingPrice'], 'yesterdayPrice', 'tradeValue']);
+                ['instrumentName', ['closingPriceChangePercent', 'closingPricePercent', 'closingPrice'], 'yesterdayPrice', 'tradeValue',
+                 'industryName']);
         }
         if ($code !== '') {
             $probe('پیام‌های ناظر', fn () => $cdn->messages($code), ['dEven', 'hEven', 'tseTitle']);
-            $probe('اطلاعیه‌های کدال', fn () => $cdn->announcements($code, 5), ['title', ['publishDateTime', 'sentDateTime'], 'url']);
+            $probe('اطلاعیه‌های کدال', fn () => $cdn->announcements($code, 5), ['title', 'symbol', ['publishDateTime_Gregorian', 'publishDateTime', 'sentDateTime'], 'tracingNo']);
         }
         $fundCode = '';
         try {
@@ -280,7 +281,7 @@ final class AdminController extends Controller
         } catch (MarketException) {
         }
         if ($fundCode !== '') {
-            $probe('NAV صندوق (اهرم)', fn () => [$cdn->etf($fundCode)], [['navRed', 'pRedTran'], ['navSub', 'pSubTran']]);
+            $probe('NAV صندوق (اهرم)', fn () => [$cdn->etf($fundCode)], [['pRedTran', 'navRed'], ['pSubTran', 'navSub']]);
         }
         $probe('فهرست صندوق‌ها (درآمد ثابت)', fn () => $cdn->funds(4), ['mfName', 'navRed', 'day365Return']);
         $probe('اسناد خزانه (نرخ بدون ریسک)', function () {

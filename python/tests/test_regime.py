@@ -49,6 +49,10 @@ def test_breadth_helpers():
     watch = [{"closingPricePercent": {"value": 2}}, {"closingPricePercent": -1}, {"closingPricePercent": 0},
              {"closingPricePercent": 3}, {"closingPricePercent": "x"}]
     assert breadth_from_watch(watch) == pytest.approx(2 / 3)
+    live = [{"closingPriceChangePercent": {"value": -3.0, "state": 0}, "lastPriceChangePercent": {"value": 1, "state": 0}},
+            {"closingPriceChangePercent": {"value": 2.97, "state": 0}},
+            {"closingPriceChangePercent": {"value": -0.5, "state": 0}}]
+    assert breadth_from_watch(live) == pytest.approx(1 / 3)  # the field names of the live tse.ir rows (1405/07)
     assert breadth_from_watch([]) is None
     closes = {"a": trend(step=1), "b": trend(step=-1, start=2000), "c": trend(n=50)}
     assert breadth_above_sma(closes, closes["a"].index[-1]) == 0.5  # c is too short to judge

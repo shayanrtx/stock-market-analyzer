@@ -249,6 +249,12 @@ class TseGatewayClient(TsetmcClient):
         return _as_list(data)
 
 
+# Market-watch change fields: the live tse.ir names first (checked 1405/07), older spellings after.
+CLOSE_PCT = ("closingPriceChangePercent", "closingPricePercent")
+LAST_PCT = ("lastPriceChangePercent", "lastPricePercent")
+INDUSTRY = ("industryName", "industry_Name")
+
+
 def field(record: dict, *names: str, default: Any = None) -> Any:
     """Case-insensitive lookup over alternative names, unwrapping ``{"value": x}``."""
     if not isinstance(record, dict):

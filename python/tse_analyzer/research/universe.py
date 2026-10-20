@@ -3,7 +3,9 @@
 Calibrating on one's portfolio and watchlist (chosen, often, because they went up) would
 measure the analyst's selection, not the score. The universe is taken from the official
 market watch (tse.ir, both exchanges): ordinary shares only (no funds, bonds, rights or
-options, whose prices follow other rules), ranked by today's traded value.
+options, whose prices follow other rules), ranked by today's traded value. The live rows
+(checked 1405/07) say so in ``securitiesname`` («سهام عادی»); the market and board fields
+(``marketname``, ``markettypename``, ``boardName``) tell the base market apart.
 
 Caveat (survivorship): only symbols listed today are included, so companies that were
 delisted or suspended for good over the period are missing. Results are therefore a little
@@ -15,7 +17,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..asset_class import STOCK, classify
-from ..client import TseGatewayClient, field
+from ..client import INDUSTRY, TseGatewayClient, field
+
+ORDINARY = "سهام عادی"
 
 
 @dataclass
@@ -34,14 +38,17 @@ def market_universe(gateway: TseGatewayClient, top: int = 200) -> list[Candidate
         symbol = str(field(item, "instrumentName", "symbol", "lVal18AFC", default="") or "").strip()
         isin = str(field(item, "instrumentId", "isin", default="") or "").strip()
         name = str(field(item, "companyNamePersian", "instrumentTitle", default="") or "")
-        industry = str(field(item, "industryname", "industryName", default="") or "")
-        sub = str(field(item, "industrysubname", "industrySubName", default="") or "")
-        market = str(field(item, "markettypename", "marketTypeName", "marketname", default="") or "")
+        industry = str(field(item, *INDUSTRY, default="") or "").strip()
+        sub = str(field(item, "industrySubName", default="") or "").strip()
+        kind = str(field(item, "securitiesname", default="") or "").strip().replace("ي", "ی").replace("ك", "ک")
+        market = " ".join(str(field(item, f, default="") or "") for f in ("marketname", "markettypename", "boardName"))
         try:
             value = float(field(item, "tradeValue", "value", default=0) or 0)
         except (TypeError, ValueError):
             value = 0.0
         if not symbol or "پایه" in market:  # the base market trades a few times a week at best
+            continue
+        if kind and kind != ORDINARY:
             continue
         if classify(isin, name, symbol, industry, sub).kind != STOCK:
             continue

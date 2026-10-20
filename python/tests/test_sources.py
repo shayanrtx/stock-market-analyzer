@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from tse_analyzer import client as client_mod
-from tse_analyzer import disclosures, doctor, funds, rates
+from tse_analyzer import disclosures, doctor, funds, rates, report
 from tse_analyzer.analysis import money_flow
 from tse_analyzer.asset_class import classify
 from tse_analyzer.client import TseGatewayClient, TsetmcClient, TsetmcError
@@ -50,7 +50,25 @@ def test_messages_and_codal_merge_newest_first():
     monthly = items[1]
     assert monthly["kind"] == "monthly" and monthly["at"] == "2026-10-18 18:02"  # 1405/07/26
     assert monthly["url"] == "https://www.codal.ir/Reports/Decision.aspx?LetterSerial=abc"
-    assert monthly["letter_code"] == "ن-۳۰" and monthly["tracing_no"] == "123"
+    assert monthly["tracing_no"] == "123" and not monthly["search"]
+
+
+def test_live_codal_record_links_to_the_symbol_search():
+    # Verbatim from Codal/GetPreparedDataByInsCode on the live API (1405/07): no link to the report.
+    live = {"id": 764663, "symbol": "فولاد", "name": "فولاد مبارکه اصفهان",
+            "title": "گزارش فعالیت ماهانه دوره 1 ماهه منتهی به  1405/06/31",
+            "sentDateTime_Gregorian": "2026-09-29T18:55:34", "publishDateTime_Gregorian": "2026-09-29T18:55:34",
+            "publishDateTime_DEven": 20260929, "mainTableRowID": 768058, "hasHtmlReport": 2, "hasExcelReport": 1,
+            "hasPDFReport": 2, "hasXMLReport": 0, "attachmentID": 701296, "contentType": 10,
+            "fileName": "\"جدول منابع مصارف ارزی- شهریور 1405.pdf\"", "fileExtension": "pdf", "tracingNo": "1605314"}
+    day_only = {"symbol": "فولاد", "title": "آگهی دعوت به مجمع عمومی عادی سالیانه", "publishDateTime_DEven": 20261012}
+    agm, monthly = disclosures.merge([], [live, day_only])
+    assert agm["at"] == "2026-10-12 00:00" and agm["kind"] == "agm"
+    assert monthly["at"] == "2026-09-29 18:55" and monthly["kind"] == "monthly"
+    assert monthly["tracing_no"] == "1605314" and monthly["search"]
+    assert monthly["url"] == "https://www.codal.ir/ReportList.aspx?search&Symbol=%D9%81%D9%88%D9%84%D8%A7%D8%AF"
+    text = report.disclosures_text([monthly])
+    assert "شماره‌ی پیگیری: 1605314" in text and "جستجوی نماد در کدال" in text
 
 
 def test_disclosures_tolerate_missing_sources():
@@ -70,6 +88,10 @@ def test_etf_nav_and_premium():
     assert nav == {"redemption": 20_000, "subscription": 20_200, "statistical": 19_950, "source": "etf"}
     assert funds.nav_premium(21_000, nav) == pytest.approx(5.0)
     assert funds.nav_premium(None, nav) is None and funds.nav_premium(21_000, None) is None
+    # The live ETF record (1405/07) has no statistical NAV.
+    live = {"insCode": "17914401175772326", "deven": 20261020, "hEven": 163413, "pRedTran": 96268.0,
+            "pSubTran": 97634.0, "iClose": 0}
+    assert funds.nav_from_record(live) == {"redemption": 96268.0, "subscription": 97634.0, "statistical": None}
 
 
 def test_nav_falls_back_to_registry_by_name():

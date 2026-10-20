@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from . import indicators as ind
-from .client import field
+from .client import CLOSE_PCT, field
 
 BUY_MIN_SCORE = 60.0  # production buy rule (SignalEngine::BUY_MIN_SCORE)
 EXTRA_SCORE = {"bull": 0.0, "neutral": 5.0, "bear": 10.0, "unknown": 0.0}
@@ -102,7 +102,7 @@ def breadth_from_watch(items: list[dict]) -> float | None:
     up = down = 0
     for item in items:
         try:
-            change = float(field(item, "closingPricePercent", default=0) or 0)
+            change = float(field(item, *CLOSE_PCT, default=0) or 0)
         except (TypeError, ValueError):
             continue
         up += change > 0

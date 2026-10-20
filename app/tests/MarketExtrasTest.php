@@ -81,6 +81,28 @@ final class MarketExtrasTest extends TestCase
         $this->assertSame('capital', Disclosures::kind('افزایش سرمایه از محل سود انباشته'));
     }
 
+    public function testLiveCodalRecordsLinkToTheSymbolSearch(): void
+    {
+        // Verbatim from Codal/GetPreparedDataByInsCode on the live API (1405/07): no link to the report.
+        $items = Disclosures::merge([], [
+            ['id' => 764663, 'symbol' => 'فولاد', 'name' => 'فولاد مبارکه اصفهان',
+             'title' => 'گزارش فعالیت ماهانه دوره 1 ماهه منتهی به  1405/06/31',
+             'sentDateTime_Gregorian' => '2026-09-29T18:55:34', 'publishDateTime_Gregorian' => '2026-09-29T18:55:34',
+             'publishDateTime_DEven' => 20260929, 'mainTableRowID' => 768058, 'hasHtmlReport' => 2, 'hasExcelReport' => 1,
+             'hasPDFReport' => 2, 'hasXMLReport' => 0, 'attachmentID' => 701296, 'contentType' => 10,
+             'fileName' => '"جدول منابع مصارف ارزی- شهریور 1405.pdf"', 'fileExtension' => 'pdf', 'tracingNo' => '1605314'],
+            ['symbol' => 'فولاد', 'title' => 'آگهی دعوت به مجمع عمومی عادی سالیانه', 'publishDateTime_DEven' => 20261012],
+        ]);
+        $this->assertSame('2026-10-12 00:00', $items[0]['at'], 'the day alone when no time is given');
+        $this->assertSame('2026-09-29 18:55', $items[1]['at']);
+        $this->assertSame('monthly', $items[1]['kind']);
+        $this->assertSame('1605314', $items[1]['tracing']);
+        $this->assertTrue($items[1]['search']);
+        $this->assertSame('https://www.codal.ir/ReportList.aspx?search&Symbol=' . rawurlencode('فولاد'), $items[1]['url']);
+        $message = \Sabadgardan\Alerts\DisclosureWatch::message('فولاد', $items[0], 'سامانه');
+        $this->assertContains('جستجوی نماد در کدال', $message);
+    }
+
     public function testFundNavPremiumAndNameMatching(): void
     {
         $nav = FundNav::fromRecord(['pRedTran' => 10000, 'pSubTran' => 10050]);
@@ -88,6 +110,10 @@ final class MarketExtrasTest extends TestCase
         $this->assertNear(8.0, FundNav::premium(10800, $nav), 1e-9);
         $this->assertNull(FundNav::premium(null, $nav));
         $this->assertNull(FundNav::fromRecord(['navRed' => 0]));
+        $live = FundNav::fromRecord(['insCode' => '17914401175772326', 'deven' => 20261020, 'hEven' => 163413,
+                                     'pRedTran' => 96268.0, 'pSubTran' => 97634.0, 'iClose' => 0]);
+        $this->assertSame(['redemption' => 96268.0, 'subscription' => 97634.0, 'statistical' => null], $live,
+            'the live ETF record (1405/07) has no statistical NAV');
 
         $this->assertTrue(FundNav::sameFund('صندوق س. پشتوانه طلای مفید', 'صندوق سرمایه گذاری پشتوانه طلای مفید'));
         $this->assertFalse(FundNav::sameFund('صندوق س. پشتوانه طلای مفید', 'صندوق سرمایه گذاری پشتوانه طلای لوتوس'));

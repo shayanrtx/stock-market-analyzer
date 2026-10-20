@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .analysis import money_flow
-from .client import TseGatewayClient, TsetmcClient, TsetmcError, field
+from .client import CLOSE_PCT, INDUSTRY, LAST_PCT, TseGatewayClient, TsetmcClient, TsetmcError, field
 from .regime import Regime, breadth_from_watch, market_regime
 
 
@@ -86,9 +86,9 @@ def top_movers(
             row = MoverRow(
                 isin=str(field(item, "instrumentId", default="")),
                 symbol=str(field(item, "instrumentName", default="")),
-                industry=str(field(item, "industryName", "industry_Name", default="")),
-                close_pct=float(field(item, "closingPricePercent", default=0) or 0),
-                last_pct=float(field(item, "lastPricePercent", default=0) or 0),
+                industry=str(field(item, *INDUSTRY, default="") or "").strip(),
+                close_pct=float(field(item, *CLOSE_PCT, default=0) or 0),
+                last_pct=float(field(item, *LAST_PCT, default=0) or 0),
                 trade_value=float(field(item, "tradeValue", default=0) or 0),
             )
         except (TypeError, ValueError):

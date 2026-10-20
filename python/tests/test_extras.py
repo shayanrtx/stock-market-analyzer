@@ -46,15 +46,19 @@ def test_smart_money_ranks_and_resolves_names():
 
 
 def test_top_movers_from_gateway():
+    # Field names of the live tse.ir rows (1405/07); the second row uses the older spelling.
     items = [
-        {"instrumentId": "IRO1A", "instrumentName": "الف", "industryName": "فلزات",
-         "closingPricePercent": {"value": 3.1}, "lastPricePercent": {"value": 4}, "tradeValue": {"value": 5e10}},
+        {"instrumentId": "IRO1A", "instrumentName": "الف", "industryname": "فلزات اساسی          ",
+         "closingPriceChangePercent": {"value": 3.1, "state": 0}, "lastPriceChangePercent": {"value": 4, "state": 0},
+         "tradeValue": {"value": 5e10, "state": 0}},
         {"instrumentId": "IRO1B", "instrumentName": "ب", "industryName": "خودرو",
          "closingPricePercent": {"value": -2}, "lastPricePercent": {"value": -1}, "tradeValue": {"value": 1e9}},
     ]
     session = FakeSession({"MarketWatchCash": FakeResponse(200, {"Items": items})})
     gw = TseGatewayClient(session=session)
-    assert [r.symbol for r in screener.top_movers(gw)] == ["الف", "ب"]
+    rows = screener.top_movers(gw)
+    assert [r.symbol for r in rows] == ["الف", "ب"]
+    assert (rows[0].close_pct, rows[0].last_pct, rows[0].industry) == (3.1, 4.0, "فلزات اساسی")
     assert [r.symbol for r in screener.top_movers(gw, ascending=True)] == ["ب", "الف"]
     assert [r.symbol for r in screener.top_movers(gw, min_value=1e10)] == ["الف"]
     assert session.calls[0].startswith("https://webgw.tse.ir/InstrumentProvider/")

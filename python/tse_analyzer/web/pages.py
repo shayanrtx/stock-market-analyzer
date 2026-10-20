@@ -9,7 +9,8 @@ from .. import funds as funds_mod
 from .. import portfolio as pf
 from .. import screener
 from ..asset_class import classify
-from ..client import FLOW_BOURSE, FLOW_FARABOURSE, TEDPIX, TseGatewayClient, TsetmcClient, TsetmcError, field
+from ..client import (CLOSE_PCT, FLOW_BOURSE, FLOW_FARABOURSE, INDUSTRY, TEDPIX, TseGatewayClient, TsetmcClient,
+                      TsetmcError, field)
 from ..fx import usd_sensitivity
 from ..ledger import LedgerError, load_ledger
 from ..performance import fetch_performance
@@ -344,10 +345,12 @@ def _disclosures(items: list[dict]) -> str:
     for it in items[:15]:
         title = esc(it["title"])
         if it["url"].startswith(("https://", "http://")):
-            title = f'<a href="{esc(it["url"])}" target="_blank" rel="noopener">{title}</a>'
+            hint = ' title="جستجوی نماد در کدال؛ گزارش را با شماره‌ی پیگیری پیدا کنید"' if it.get("search") else ""
+            title = f'<a href="{esc(it["url"])}" target="_blank" rel="noopener"{hint}>{title}</a>'
         body = f'<div class="detail">{esc(it["body"][:400])}</div>' if it["body"] else ""
+        tracing = f" · پیگیری {esc(it['tracing_no'])}" if it.get("tracing_no") else ""
         out.append(f'<li><span class="pts {"down" if it["important"] else "flat"}">{esc(it["source"])}</span><div>'
-                   f'<span class="name">{title}</span><span class="cat">{esc(it["label"])} · {esc(it["at"])}</span>'
+                   f'<span class="name">{title}</span><span class="cat">{esc(it["label"])} · {esc(it["at"])}{tracing}</span>'
                    f"{body}</div></li>")
     return f'<ul class="reasons">{"".join(out)}</ul>'
 
@@ -432,8 +435,8 @@ def market_page(cdn: TsetmcClient, gw: TseGatewayClient) -> str:
 def _watch_row(item: dict) -> dict | None:
     try:
         return {"symbol": str(field(item, "instrumentName", default="")),
-                "industry": str(field(item, "industryName", default="") or "سایر"),
-                "change": float(field(item, "closingPricePercent", default=0) or 0),
+                "industry": str(field(item, *INDUSTRY, default="") or "").strip() or "سایر",
+                "change": float(field(item, *CLOSE_PCT, default=0) or 0),
                 "value": float(field(item, "tradeValue", default=0) or 0)}
     except (TypeError, ValueError):
         return None

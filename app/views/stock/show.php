@@ -269,8 +269,9 @@ ob_start(); ?>
         <span class="sub"><?= $v->assetTag($d['source'], $d['source'] === 'کدال' ? 'accent' : 'orange') ?>
           <?= $d['kind'] !== 'other' ? $v->assetTag(Disclosures::KINDS[$d['kind']], $d['important'] ? 'gold' : 'neutral') : '' ?>
           <?= $v->e($v->jdatetime($d['at'])) ?></span>
-        <?php if ($d['url']): ?><a href="<?= $v->e($d['url']) ?>" target="_blank" rel="noopener noreferrer"><?= $v->e($d['title']) ?></a>
+        <?php if ($d['url']): ?><a href="<?= $v->e($d['url']) ?>" target="_blank" rel="noopener noreferrer"<?= $d['search'] ? ' title="جستجوی نماد در کدال؛ گزارش را با شماره‌ی پیگیری پیدا کنید"' : '' ?>><?= $v->e($d['title']) ?></a>
         <?php else: ?><b><?= $v->e($d['title']) ?></b><?php endif; ?>
+        <?php if ($d['tracing'] !== ''): ?><span class="muted" style="font-size:12px">· پیگیری <?= $v->e($d['tracing']) ?></span><?php endif; ?>
         <?php if ($d['body'] !== ''): ?><div class="muted"><?= $v->e(mb_strimwidth($d['body'], 0, 280, '…')) ?></div><?php endif; ?>
       </li>
     <?php endforeach; ?>

@@ -71,8 +71,11 @@ final class DisclosureWatch
         if ($item['body'] !== '') {
             $lines[] = mb_strimwidth($item['body'], 0, 400, '…');
         }
+        if (($item['tracing'] ?? '') !== '') {
+            $lines[] = 'شماره‌ی پیگیری: ' . $item['tracing'];
+        }
         if ($item['url'] !== '') {
-            $lines[] = $item['url'];
+            $lines[] = (!empty($item['search']) ? 'جستجوی نماد در کدال: ' : '') . $item['url'];
         }
         $lines[] = '';
         $lines[] = '— ' . $siteName;

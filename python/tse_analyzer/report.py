@@ -203,8 +203,10 @@ def disclosures_text(items: list[dict], top: int = 15) -> str:
     for it in items[:top]:
         mark = "!" if it["important"] else " "
         lines.append(f" {mark} {it['at']}  [{it['source']} · {it['label']}] {it['title']}")
+        if it.get("tracing_no"):
+            lines.append(f"      شماره‌ی پیگیری: {it['tracing_no']}")
         if it["url"]:
-            lines.append(f"      {it['url']}")
+            lines.append(f"      {'جستجوی نماد در کدال: ' if it.get('search') else ''}{it['url']}")
     return "\n".join(lines)
 
 

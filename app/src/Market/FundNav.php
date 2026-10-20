@@ -6,7 +6,8 @@ namespace Sabadgardan\Market;
 
 /**
  * Published NAV of a traded fund and its premium or discount («حباب»): price / redemption NAV − 1.
- * Source: the fund's ETF record; if that lacks a NAV, the fund registry of its type, matched by name.
+ * Source: the fund's ETF record (pRedTran / pSubTran, checked against the live API); if that lacks a NAV,
+ * the fund registry of its type (navRed / navSub / navStat), matched by name.
  * A large premium means paying more than the fund's assets are worth (common in leveraged and gold
  * funds after rallies); a discount is the opposite.
  */
@@ -49,11 +50,11 @@ final class FundNav
     /** @return array{redemption: float, subscription: ?float, statistical: ?float}|null */
     public static function fromRecord(array $r): ?array
     {
-        $red = Field::float($r, ['navRed', 'pRedTran', 'redemptionNav', 'navRedemption']);
+        $red = Field::float($r, ['pRedTran', 'navRed', 'redemptionNav', 'navRedemption']);
         if (!$red || $red <= 0) {
             return null;
         }
-        return ['redemption' => $red, 'subscription' => Field::float($r, ['navSub', 'pSubTran', 'subscriptionNav']) ?: null,
+        return ['redemption' => $red, 'subscription' => Field::float($r, ['pSubTran', 'navSub', 'subscriptionNav']) ?: null,
                 'statistical' => Field::float($r, ['navStat', 'statisticalNav']) ?: null];
     }
 

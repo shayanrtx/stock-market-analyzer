@@ -4,8 +4,9 @@ Port of ``app/src/Market/FundNav.php`` plus a parser for ``Fund/GetFunds/{typeId
 NAV premium = close / redemption NAV − 1: a large premium means paying more than the fund's
 assets are worth (common in leveraged and gold funds after rallies).
 
-Field names are unverified: the ETF record is tried as navRed/pRedTran (redemption NAV),
-navSub/pSubTran (subscription) and navStat (statistical); case variants are accepted.
+Field names, checked against the live API (1405/07): the ETF record carries pRedTran (redemption
+NAV) and pSubTran (subscription) but no statistical NAV; the fund registry carries navRed, navSub
+and navStat. Both are read through the same alternatives; case variants are accepted.
 """
 
 from __future__ import annotations
@@ -25,8 +26,8 @@ REGISTRY_TYPES = {
     ac.FUND_FIXED_INCOME: 4, ac.FUND_GOLD: 5, ac.FUND_COMMODITY: 5, ac.FUND_EQUITY: 6, ac.FUND_MIXED: 7,
     ac.FUND_REAL_ESTATE: 18, ac.FUND_LEVERAGED: 22, ac.FUND_OTHER: 6,
 }
-RED_FIELDS = ("navRed", "pRedTran", "redemptionNav", "navRedemption")
-SUB_FIELDS = ("navSub", "pSubTran", "subscriptionNav")
+RED_FIELDS = ("pRedTran", "navRed", "redemptionNav", "navRedemption")
+SUB_FIELDS = ("pSubTran", "navSub", "subscriptionNav")
 STAT_FIELDS = ("navStat", "statisticalNav")
 PORTFOLIO_FIELDS = {"stock": "portfolioStock", "bond": "portfolioBond", "deposit": "portfolioDeposit",
                     "cash": "portfolioCash", "other": "portfolioOther"}

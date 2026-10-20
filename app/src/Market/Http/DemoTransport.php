@@ -629,9 +629,7 @@ final class DemoTransport implements Transport
                 continue;
             }
             $c = $this->current($code);
-            // Only the documented fields (ENDPOINTS.md): the change percent is derived from the prices.
-            $out[] = ['instrumentId' => $d[3], 'instrumentName' => $d[0], 'industryName' => $d[2], 'closingPrice' => $c['close'],
-                      'yesterdayPrice' => $c['yesterday'], 'lastPrice' => $c['last'], 'tradeValue' => $c['value']];
+            $out[] = self::watchItem($d[3], $d[0], $d[2], $c['close'], $c['last'], $c['yesterday'], $c['value']);
         }
         $t = $this->today();
         $share = $t['final'] ? 1.0 : $t['progress'];
@@ -641,11 +639,34 @@ final class DemoTransport implements Transport
             $state = self::seed($name . ':' . MarketClock::day($this->now()));
             $chg = max(-5.0, min(5.0, ($mt * 1.1 + 0.018 * self::normal($state)) * 100 * min(1.0, 0.35 + 0.65 * $share)));
             $yesterday = round(2000 + 18000 * self::uniform($state));
-            $out[] = ['instrumentId' => 'IRO1DEMO' . sprintf('%04d', $i), 'instrumentName' => $name, 'industryName' => $industry,
-                      'closingPrice' => round($yesterday * (1 + $chg / 100)), 'yesterdayPrice' => $yesterday,
-                      'tradeValue' => round(4e10 * exp(0.9 * self::normal($state)) * max($share, 0.02))];
+            $close = round($yesterday * (1 + $chg / 100));
+            $out[] = self::watchItem('IRO1DEMO' . sprintf('%04d', $i), $name, $industry, $close, $close, $yesterday,
+                round(4e10 * exp(0.9 * self::normal($state)) * max($share, 0.02)));
         }
         return $out;
+    }
+
+    /**
+     * One market-watch row shaped like the live tse.ir answer: numbers wrapped as {value, state},
+     * lower-case market and industry fields, the industry name padded with spaces.
+     *
+     * @return array<string, mixed>
+     */
+    private static function watchItem(string $isin, string $symbol, string $industry, float $close, float $last,
+                                      float $yesterday, float $value): array
+    {
+        $cell = static fn (float $v): array => ['value' => $v, 'state' => 0];
+        $pct = static fn (float $p): array => $cell(round(($p / $yesterday - 1) * 100, 2));
+        $farabourse = str_starts_with($isin, 'IRO3');
+        return ['instrumentId' => $isin, 'instrumentName' => $symbol, 'companyNamePersian' => $symbol,
+                'tradeValue' => $cell($value), 'lastPrice' => $cell($last), 'lastPriceChange' => $cell($last - $yesterday),
+                'lastPriceChangePercent' => $pct($last), 'closingPrice' => $cell($close),
+                'closingPriceChange' => $cell($close - $yesterday), 'closingPriceChangePercent' => $pct($close),
+                'yesterdayPrice' => $cell($yesterday), 'boardName' => $farabourse ? null : 'بازار اول - فرعی',
+                'marketid' => $farabourse ? 30 : 20, 'marketname' => $farabourse ? 'فرابورس' : 'بورس',
+                'markettypeid' => 'NO', 'markettypename' => 'نرمال',
+                'industryname' => $industry . str_repeat(' ', max(0, 40 - mb_strlen($industry))), 'securitiesid' => 'O', 'securitiesname' => 'سهام عادی',
+                'stateid' => 'A ', 'statename' => 'مجاز'];
     }
 
     // ------------------------------------------------------ disclosures, NAV, USD
@@ -711,16 +732,22 @@ final class DemoTransport implements Transport
                 $out[] = $this->letter($code, 'آگهی دعوت به مجمع عمومی عادی سالیانه صاحبان سهام', sprintf('%04d/%02d/%02d 16:40:00', $ny, $nm, 2));
             }
         }
-        usort($out, static fn ($a, $b) => strcmp($b['publishDateTime'], $a['publishDateTime']));
+        usort($out, static fn ($a, $b) => strcmp($b['publishDateTime_Gregorian'], $a['publishDateTime_Gregorian']));
         return $out;
     }
 
+    /** One Codal record shaped like the live API: Gregorian ISO times, a tracing number and no link. */
     private function letter(string $code, string $title, string $publish): array
     {
-        $serial = substr(sha1($code . $title), 0, 12);
-        return ['symbol' => self::universe()[$code][0], 'name' => self::universe()[$code][1], 'title' => $title,
-                'letterCode' => 'ن-۳۰', 'sentDateTime' => $publish, 'publishDateTime' => $publish,
-                'url' => "/Reports/Decision.aspx?LetterSerial=DEMO$serial", 'tracingNo' => abs(crc32($serial))];
+        [$date, $time] = explode(' ', $publish);
+        [$jy, $jm, $jd] = array_map('intval', explode('/', $date));
+        [$gy, $gm, $gd] = Jalali::toGregorian($jy, $jm, $jd);
+        $at = sprintf('%04d-%02d-%02dT%s', $gy, $gm, $gd, $time);
+        $serial = crc32($code . $title);
+        return ['id' => $serial % 1000000, 'symbol' => self::universe()[$code][0], 'name' => self::universe()[$code][1],
+                'title' => $title, 'sentDateTime_Gregorian' => $at, 'publishDateTime_Gregorian' => $at,
+                'publishDateTime_DEven' => (int) sprintf('%04d%02d%02d', $gy, $gm, $gd), 'hasHtmlReport' => 2,
+                'hasPDFReport' => 2, 'tracingNo' => (string) (1500000 + $serial % 100000)];
     }
 
     /** NAVs of the demo funds: leveraged funds trade at a premium after rallies. @return array<string, float>|null */
@@ -738,8 +765,8 @@ final class DemoTransport implements Transport
         };
         $red = round($close / (1 + $premium));
         $sessions = $this->sessions();
-        return ['insCode' => $code, 'navRed' => $red, 'navSub' => round($red * 1.004), 'navStat' => round($red * 1.002),
-                'deven' => (int) str_replace('-', '', (string) end($sessions))];
+        return ['insCode' => $code, 'deven' => (int) str_replace('-', '', (string) end($sessions)), 'hEven' => 163413,
+                'pRedTran' => $red, 'pSubTran' => round($red * 1.004), 'iClose' => 0];
     }
 
     /** Fund registry of one type (Fund/GetFunds/{type}), as fipiran publishes it. @return list<array<string, mixed>> */
@@ -754,8 +781,10 @@ final class DemoTransport implements Transport
             $rows = $this->series((string) $code);
             $last = end($rows)['close'];
             $yearAgo = $rows[max(0, count($rows) - 251)]['close'];
-            $out[] = ['regNo' => (string) (11000 + $d[11]), 'mfName' => $d[1], 'insCode' => (string) $code] + $nav
-                + ['netAsset' => round($nav['navRed'] * $d[11] * 1e5), 'day365Return' => round(($last / $yearAgo - 1) * 100, 2)];
+            $red = $nav['pRedTran'];
+            $out[] = ['regNo' => (string) (11000 + $d[11]), 'mfName' => $d[1], 'insCode' => (string) $code, 'navRed' => $red,
+                      'navSub' => $nav['pSubTran'], 'navStat' => round($red * 1.002), 'netAsset' => round($red * $d[11] * 1e5),
+                      'day365Return' => round(($last / $yearAgo - 1) * 100, 2)];
         }
         return $out;
     }

@@ -87,10 +87,10 @@ def build_probes(cdn: TsetmcClient, gw: TseGatewayClient, symbol: str, fx: TgjuC
         Probe("cdn_supervisor_msg", lambda: cdn.get(f"Msg/GetMsgByInsCode/{ins_code()}"),
               ["dEven", "hEven", "tseTitle", "tseDesc"], "msg"),
         Probe("cdn_codal", lambda: cdn.get(f"Codal/GetPreparedDataByInsCode/20/{ins_code()}"),
-              ["title|letterTitle", "publishDateTime|sentDateTime", "url|htmlUrl", "letterCode", "tracingNo"],
+              ["title|letterTitle", "symbol", "publishDateTime_Gregorian|publishDateTime|sentDateTime", "tracingNo"],
               "preparedData"),
         Probe("cdn_etf_nav", lambda: cdn.get(f"Fund/GetETFByInsCode/{etf_code()}"),
-              ["navRed|pRedTran|redemptionNav", "navSub|pSubTran|subscriptionNav", "navStat|statisticalNav"],
+              ["pRedTran|navRed|redemptionNav", "pSubTran|navSub|subscriptionNav"],
               "etf"),
         Probe("cdn_funds", lambda: cdn.get("Fund/GetFunds/6"),
               ["mfName", "regNo", "navRed", "navSub", "navStat", "netAsset", "day30Return", "day365Return",
@@ -100,11 +100,11 @@ def build_probes(cdn: TsetmcClient, gw: TseGatewayClient, symbol: str, fx: TgjuC
         Probe("gw_market_date", lambda: gw.get("api/v1/PublicData/MarketDate/fa"),
               ["stockTypeId", "isOpen"]),
         Probe("gw_market_summary", lambda: gw.get("InstrumentProvider/api/v1/Instrument/MarketSummary/fa"),
-              ["allShareIndex", "allShareIndexPercent", "tradeValue"]),
+              ["allShareIndex", "allShareIndexChangePercent", "tradeValue"]),
         Probe("gw_market_watch_cash",
               lambda: gw.get("InstrumentProvider/api/v1/MarketWatch/MarketWatchCash/fa"),
-              ["instrumentId", "instrumentName", "closingPricePercent", "lastPricePercent",
-               "tradeValue", "industryName"], "Items"),
+              ["instrumentId", "instrumentName", "closingPriceChangePercent|closingPricePercent",
+               "lastPriceChangePercent|lastPricePercent", "tradeValue", "industryName", "securitiesname"], "Items"),
     ] + extra
 
 

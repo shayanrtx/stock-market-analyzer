@@ -155,22 +155,30 @@ def test_jalali_month_returns():
 # ---------------------------------------------------------------------- universe
 
 class FakeGateway:
+    """Rows shaped like the live MarketWatchCash answer (1405/07)."""
+
     def market_watch(self, kind="Cash"):
         rows = [
-            ("فولاد", "IRO1FOLD0001", "فلزات اساسی", "بورس", 900),
-            ("اهرم", "IRT1AHRM0001", "صندوق سرمایه گذاری", "بورس", 990),   # fund
-            ("ح .فولاد", "IRR1FOLD0101", "فلزات اساسی", "بورس", 800),      # rights
-            ("اخزا4024", "IRB3TB740001", "اوراق", "فرابورس", 700),          # bond
-            ("شپنا", "IRO1NAFT0001", "فراورده‌های نفتی", "بورس", 500),
-            ("پایه۱", "IRO3XXXX0001", "متفرقه", "بازار پایه زرد", 999),      # base market
-            ("فولاد", "IRO1FOLD0001", "فلزات اساسی", "بورس", 10),          # duplicate
+            ("فولاد", "IRO1FOLD0001", "فلزات اساسی", "بورس", "بازار اول - فرعی", "سهام عادی", 900),
+            ("اهرم", "IRT1AHRM0001", "صندوق سرمایه گذاری", "بورس", None, "", 990),             # fund
+            ("ح .فولاد", "IRR1FOLD0101", "فلزات اساسی", "بورس", None, "حق تقدم", 800),         # rights
+            ("اخزا4024", "IRB3TB740001", "اوراق", "فرابورس", None, "", 700),                     # bond
+            ("شپنا", "IRO1NAFT0001", "فراورده‌های نفتی", "بورس", "بازار اول - فرعی", "سهام عادي", 500),
+            ("آ س پ", "IRO3ASPZ0001", "انبوه سازی، املاک و مستغلات", "فرابورس", None, "سهام عادی", 400),
+            ("پایه۱", "IRO3XXXX0001", "متفرقه", "فرابورس", "بازار پایه زرد", "سهام عادی", 999),  # base market
+            ("نماد", "IRO1XXXX0002", "متفرقه", "بورس", None, "سهام ممتاز", 950),               # not ordinary
+            ("فولاد", "IRO1FOLD0001", "فلزات اساسی", "بورس", "بازار اول - فرعی", "سهام عادی", 10),  # duplicate
         ]
-        return [{"instrumentName": s, "instrumentId": i, "industryName": ind, "markettypename": m,
-                 "tradeValue": {"value": v}} for s, i, ind, m, v in rows]
+        return [{"instrumentName": s, "instrumentId": i, "companyNamePersian": s, "industryname": ind + " " * 8,
+                 "marketname": m, "markettypeid": "NO", "markettypename": "نرمال", "boardName": board,
+                 "securitiesid": "O", "securitiesname": kind, "tradeValue": {"value": v, "state": 0}}
+                for s, i, ind, m, board, kind, v in rows]
 
 
 def test_market_universe_keeps_ordinary_shares_by_traded_value():
-    assert [c.symbol for c in market_universe(FakeGateway(), 10)] == ["فولاد", "شپنا"]
+    top = market_universe(FakeGateway(), 10)
+    assert [c.symbol for c in top] == ["فولاد", "شپنا", "آ س پ"]
+    assert top[0].industry == "فلزات اساسی"  # the live name is padded with spaces
     assert [c.symbol for c in market_universe(FakeGateway(), 1)] == ["فولاد"]
 
 

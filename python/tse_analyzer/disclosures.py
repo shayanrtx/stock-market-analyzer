@@ -4,14 +4,17 @@ Port of ``app/src/Market/Disclosures.php``. Each item is tagged with what it mea
 holder: a halt or reopening, a general meeting, a capital increase, financial statements,
 the monthly activity report, a dividend, or other.
 
-Codal field names are unverified (``title``, ``sentDateTime``/``publishDateTime``, ``url``
-relative to https://www.codal.ir, ``letterCode``, ``tracingNo``); case variants and a few
-alternatives are accepted. Run ``tse-analyzer doctor`` from Iran to confirm them.
+TSETMC's Codal records (checked against the live API, 1405/07) carry ``symbol``, ``title``,
+``tracingNo`` and ``publishDateTime_Gregorian`` (Tehran time) but no link to the report; such an
+item links to the symbol's search page on Codal instead (``search`` is then True) and keeps the
+tracing number to find the report there. Older spellings are still accepted.
 """
 
 from __future__ import annotations
 
 import re
+
+from urllib.parse import quote
 
 from .client import TsetmcClient, TsetmcError, field
 from .potential import jalali_to_gregorian
@@ -33,11 +36,12 @@ RULES = (
 
 _DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 _KEY = str.maketrans({"ي": "ی", "ك": "ک", "‌": None, " ": None})
+DATE_FIELDS = ("publishDateTime_Gregorian", "sentDateTime_Gregorian", "publishDateTime", "sentDateTime")
 _DATETIME = re.compile(r"^(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:[ T](\d{1,2}):(\d{2}))?")
 
 
 def merge(messages: list[dict], announcements: list[dict]) -> list[dict]:
-    """``[{source, at ("Y-m-d H:M", Tehran time), title, body, url, kind, label, important, ...}]``."""
+    """``[{source, at ("Y-m-d H:M", Tehran time), title, body, url, search, tracing_no, kind, label, important}]``."""
     out = []
     for m in messages:
         at = from_deven(field(m, "dEven", default=""), field(m, "hEven", default=""))
@@ -46,7 +50,8 @@ def merge(messages: list[dict], announcements: list[dict]) -> list[dict]:
             out.append(_item("ناظر", at, title, str(field(m, "tseDesc", default="")).strip(), ""))
     for a in announcements:
         title = str(field(a, "title", "letterTitle", default="")).strip()
-        at = parse_datetime(str(field(a, "publishDateTime", "sentDateTime", default="")))
+        at = (parse_datetime(str(field(a, *DATE_FIELDS, default="")))
+              or from_deven(field(a, "publishDateTime_DEven", default=""), ""))
         if not at or not title:
             continue
         url = str(field(a, "url", "htmlUrl", default="")).strip()
@@ -54,9 +59,12 @@ def merge(messages: list[dict], announcements: list[dict]) -> list[dict]:
             url = ""  # another scheme (javascript:, data:, …) is never a Codal page
         elif url and not re.match(r"^https?://", url):
             url = CODAL_BASE + ("" if url.startswith("/") else "/") + url
-        item = _item("کدال", at, title, "", url)
-        item["letter_code"] = str(field(a, "letterCode", default="") or "")
-        item["tracing_no"] = str(field(a, "tracingNo", default="") or "")
+        symbol = str(field(a, "symbol", default="") or "").strip()
+        search = not url and bool(symbol)
+        if search:
+            url = search_url(symbol)
+        item = _item("کدال", at, title, "", url, search)
+        item["tracing_no"] = str(field(a, "tracingNo", default="") or "").strip()
         out.append(item)
     out.sort(key=lambda x: x["at"], reverse=True)
     return out
@@ -103,7 +111,12 @@ def parse_datetime(value: str) -> str:
     return f"{y:04d}-{mo:02d}-{d:02d} {int(m[4] or 0):02d}:{int(m[5] or 0):02d}"
 
 
-def _item(source: str, at: str, title: str, body: str, url: str) -> dict:
+def search_url(symbol: str) -> str:
+    """The symbol's announcement list on Codal (the API gives no link to a single report)."""
+    return f"{CODAL_BASE}/ReportList.aspx?search&Symbol={quote(symbol, safe='')}"
+
+
+def _item(source: str, at: str, title: str, body: str, url: str, search: bool = False) -> dict:
     k = kind(title + " " + body[:200])
-    return {"source": source, "at": at, "title": title, "body": body, "url": url, "kind": k,
-            "label": KINDS[k], "important": k in IMPORTANT}
+    return {"source": source, "at": at, "title": title, "body": body, "url": url, "search": search,
+            "tracing_no": "", "kind": k, "label": KINDS[k], "important": k in IMPORTANT}

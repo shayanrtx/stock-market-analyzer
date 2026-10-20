@@ -8,6 +8,10 @@ namespace Sabadgardan\Market;
  * Supervisor messages (پیام ناظر) and Codal announcements merged into one timeline, newest first,
  * each tagged with what it means for a holder: a halt or reopening, a general meeting, a capital
  * increase, financial statements, the monthly activity report, or other.
+ *
+ * TSETMC's Codal records (checked against the live API) carry symbol, title, tracingNo and
+ * publishDateTime_Gregorian (Tehran time) but no link to the report; such an item links to the
+ * symbol's search page on Codal instead (``search`` is then true) and shows the tracing number.
  */
 final class Disclosures
 {
@@ -15,6 +19,7 @@ final class Disclosures
         'halt' => 'توقف / بازگشایی', 'agm' => 'مجمع', 'capital' => 'افزایش سرمایه', 'monthly' => 'گزارش فعالیت ماهانه',
         'financial' => 'صورت‌های مالی', 'dividend' => 'سود نقدی', 'other' => 'سایر',
     ];
+    public const CODAL = 'https://www.codal.ir';
     /** Keyword => kind, checked in order on the normalised title. */
     private const RULES = [
         'توقف' => 'halt', 'تعلیق' => 'halt', 'بازگشایی' => 'halt', 'ممنوع' => 'halt',
@@ -26,7 +31,7 @@ final class Disclosures
     /**
      * @param list<array<string, mixed>> $messages Msg/GetMsgByInsCode
      * @param list<array<string, mixed>> $announcements Codal/GetPreparedDataByInsCode
-     * @return list<array{source: string, at: string, title: string, body: string, url: string, kind: string, important: bool}>
+     * @return list<array{source: string, at: string, title: string, body: string, url: string, search: bool, tracing: string, kind: string, important: bool}>
      */
     public static function merge(array $messages, array $announcements): array
     {
@@ -41,7 +46,9 @@ final class Disclosures
         }
         foreach ($announcements as $a) {
             $title = trim((string) Field::get($a, ['title', 'letterTitle'], ''));
-            $at = self::parseDateTime((string) Field::get($a, ['publishDateTime', 'sentDateTime'], ''));
+            $at = self::parseDateTime((string) Field::get($a,
+                ['publishDateTime_Gregorian', 'sentDateTime_Gregorian', 'publishDateTime', 'sentDateTime'], ''))
+                ?: self::fromDEven((string) Field::get($a, 'publishDateTime_DEven', ''), '');
             if ($at === '' || $title === '') {
                 continue;
             }
@@ -49,20 +56,32 @@ final class Disclosures
             if (preg_match('#^[a-z][a-z0-9+.-]*:#i', $url) && !preg_match('#^https?://#i', $url)) {
                 $url = '';   // javascript:, data: and the like are never a link to follow
             } elseif ($url !== '' && !preg_match('#^https?://#i', $url)) {
-                $url = 'https://www.codal.ir' . (str_starts_with($url, '/') ? '' : '/') . $url;
+                $url = self::CODAL . (str_starts_with($url, '/') ? '' : '/') . $url;
             }
-            $out[] = self::item('کدال', $at, $title, '', $url);
+            $search = false;
+            $symbol = trim((string) Field::get($a, 'symbol', ''));
+            if ($url === '' && $symbol !== '') {
+                [$url, $search] = [self::searchUrl($symbol), true];
+            }
+            $out[] = self::item('کدال', $at, $title, '', $url, $search, trim((string) Field::get($a, 'tracingNo', '')));
         }
         usort($out, static fn ($a, $b) => strcmp($b['at'], $a['at']));
         return $out;
     }
 
-    /** @return array{source: string, at: string, title: string, body: string, url: string, kind: string, important: bool} */
-    private static function item(string $source, string $at, string $title, string $body, string $url): array
+    /** The symbol's announcement list on Codal (the API gives no link to a single report). */
+    public static function searchUrl(string $symbol): string
+    {
+        return self::CODAL . '/ReportList.aspx?search&Symbol=' . rawurlencode($symbol);
+    }
+
+    /** @return array{source: string, at: string, title: string, body: string, url: string, search: bool, tracing: string, kind: string, important: bool} */
+    private static function item(string $source, string $at, string $title, string $body, string $url,
+                                 bool $search = false, string $tracing = ''): array
     {
         $kind = self::kind($title . ' ' . mb_substr($body, 0, 200));
-        return ['source' => $source, 'at' => $at, 'title' => $title, 'body' => $body, 'url' => $url, 'kind' => $kind,
-                'important' => in_array($kind, ['halt', 'capital', 'agm', 'dividend'], true)];
+        return ['source' => $source, 'at' => $at, 'title' => $title, 'body' => $body, 'url' => $url, 'search' => $search,
+                'tracing' => $tracing, 'kind' => $kind, 'important' => in_array($kind, ['halt', 'capital', 'agm', 'dividend'], true)];
     }
 
     public static function kind(string $text): string

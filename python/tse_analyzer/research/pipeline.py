@@ -5,7 +5,7 @@
 3. brings the local price store up to date (resumable: fresh symbols are skipped on a re-run),
    the index, and the macro drivers;
 4. tests trading shares, one session to four weeks, after costs and queues, and a
-   low-turnover portfolio (shortterm.py);
+   monthly portfolio (shortterm.py);
 5. tests moving between the stock market, gold, the dollar and a fixed-income fund through
    traded funds (allocation.py), and sets everything against inflation;
 6. scores every symbol at every month end with data up to that day, and measures the score,
@@ -122,7 +122,7 @@ def _run(folder: Path, top: int, db: str, drivers_dir: str, workers: int, skip_u
              first.strftime("%Y-%m-%d"), last.strftime("%Y-%m-%d"),
              f"{len(index)} روز" if index is not None else "ندارد", "، ".join(macro.LABELS[k] for k in drivers) or "هیچ")
 
-    _step(4, "آزمون معامله‌ی سهام (۱ جلسه تا ۴ هفته و سبد کم‌گردش، بعد از کارمزد و با رعایت صف)")
+    _step(4, "آزمون معامله‌ی سهام (۱ جلسه تا ۴ هفته و سبد ماهانه، بعد از کارمزد و با رعایت صف)")
     t0 = time.time()
     short = shortterm.run(universe, index, inflation=inflation, progress=_progress("روش", 0, "روش خرید و فروش"))
     log.info("%d روز معاملاتی و %d سهم در %.0f ثانیه", short.days, short.symbols, time.time() - t0)
@@ -301,11 +301,18 @@ def verdict_lines(short: shortterm.ShortTerm, alloc: allocation.Allocation, infl
         label, r = recent[0]
         lines.append(f"   • بهترین جابه‌جایی با صندوق‌ها: «{label}»: رشد سالانه {shortterm._pct(r['cagr_pct'], 0)}، "
                      f"بیشترین افت {shortterm._pct(r['max_drawdown_pct'], 0)}")
+    usd = alloc.strategies.get("hold_usd", {}).get("recent", {}).get("cagr_pct")
+    if usd is not None:
+        lines.append(f"   • دلار در همان سال‌ها: رشد سالانه {shortterm._pct(usd, 0)} (معیار تورم واقعی همین سال‌ها)")
     rates = ([best[1]["cagr_pct"]] if best and best[1].get("cagr_pct") is not None else []) \
         + ([recent[0][1]["cagr_pct"]] if recent else [])
     if rates:
-        lines.append("   → " + ("دست‌کم یک روش از تورم جلو زده است." if max(rates) > inflation * 100
-                                else "هیچ روشی از تورم جلو نزده است."))
+        top = max(rates)
+        verdicts = []
+        if usd is not None:
+            verdicts.append("از دلار جلو زده است" if top > usd else "از دلار هم جلو نزده است")
+        verdicts.append(f"از تورم {inflation * 100:.0f}٪ امروز " + ("جلو زده است" if top > inflation * 100 else "جلو نزده است"))
+        lines.append("   → بهترین روش " + " و ".join(verdicts) + ".")
     return lines
 
 

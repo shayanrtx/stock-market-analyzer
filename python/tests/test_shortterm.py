@@ -108,14 +108,15 @@ def test_a_planted_next_session_signal_is_found_and_traded():
     assert c1["monthly"]["months"] >= 8 and c1["monthly"]["avg_pct"] > c1["monthly_random"]["avg_pct"]
     hold = c1["hold"]
     assert hold["months"] >= 8 and hold["trades_per_month"] > 0 and hold["avg_hold_sessions"] >= 1
-    assert "hold" not in res.targets["o1"]  # the low-turnover portfolio trades at the close only
+    assert "hold" not in res.targets["o1"]  # the monthly portfolio trades at the close only
+    assert hold["trades_per_month"] <= 2 * st.TOP_K + 1  # reviewed once a month
     assert res.picks is not None and set(res.picks["target"]) >= {"c1", "o1"}
     text = st.report_text(res)
     for part in ("قدرت خریدار حقیقی امروز", "انتخاب شد، در آزمون تأیید شد", "ماهانه با امتیاز", "دهک‌های امتیاز",
-                 "سبد کم‌گردش"):
+                 "سبد ماهانه"):
         assert part in text, part
     summary = "\n".join(st.summary_lines(res))
-    assert "معامله‌ی سهام" in summary and "جمع‌بندی" in summary and "۱۵٪" in summary and f"سبد {st.TOP_K} سهمی کم‌گردش" in summary
+    assert "معامله‌ی سهام" in summary and "جمع‌بندی" in summary and "۱۵٪" in summary and f"سبد {st.TOP_K} سهمی ماهانه" in summary
     # the flow facts are built from the same buying, so they carry the signal too; price facts don't
     assert set(res.to_json()["targets"]["c1"]["chosen"]) <= {"buyer_power", "ind_flow", "ind_flow_5d"}
 
@@ -163,3 +164,29 @@ def test_queue_flags_chosen_as_facts_are_not_duplicated():
     assert scored["score"].notna().mean() > 0.9
     curve, trades, _, _ = st.hold_curve(scored)
     assert len(curve) == scored["date"].nunique() and trades > 0
+
+
+def test_monthly_review_keeps_the_portfolio_between_month_ends():
+    days = pd.bdate_range("2024-03-20", periods=60)  # 1403/01/01 onward
+    rng = np.random.default_rng(1)
+    rows = [{"date": d, "symbol": f"س{k}", "score": rng.random(), "price": 100.0 + k, "up_limit": 0.0, "down_limit": 0.0}
+            for d in days for k in range(30)]
+    scored = pd.DataFrame(rows)
+    ends = {days[i] for i in st.month_end_positions(days)}
+    daily = st.hold_curve(scored, top_k=5, keep=10)
+    monthly = st.hold_curve(scored, top_k=5, keep=10, rebalance=ends)
+    assert monthly[1] <= 5 + 2 * 5 * len(ends)   # first purchase, then at most a full swap per month end
+    assert monthly[1] < daily[1] / 3
+    assert st.month_end_positions(days)[-1] == len(days) - 1
+
+
+def test_data_checks_count_moves_beyond_the_limit():
+    days = pd.bdate_range("2024-01-08", periods=6)
+    good = SymbolData("1", "خوب", _frame(days, [100, 100, 104, 108, 104, 100], [100, 104, 108, 104, 100, 103]))
+    # a capital increase the data failed to adjust: -60% in one session
+    bad = SymbolData("2", "بد", _frame(days, [100, 100, 101, 102, 103, 41.2], [100, 101, 102, 103, 41.2, 42]))
+    limits = pd.DataFrame({"up": 0.05, "dn": -0.05}, index=days)
+    panel = pd.concat([st.symbol_panel(s, pd.DatetimeIndex(days), limits, horizons=(1,)) for s in (good, bad)])
+    dc = st.data_checks(panel, limits)
+    assert dc["beyond"] == 1 and dc["symbols"] == 1 and dc["examples"][0]["symbol"] == "بد"
+    assert dc["examples"][0]["move_pct"] == pytest.approx(-60, abs=0.5)

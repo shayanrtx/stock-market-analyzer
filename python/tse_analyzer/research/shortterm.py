@@ -13,9 +13,9 @@ to five sessions needs a different test. For holdings of 1, 2 and 5 sessions thi
 3. What that would have meant month by month with compounding: the average month, how
    often a month reached the 15% goal, how often it lost, the deepest fall, next to
    inflation and the index.
-4. A low-turnover portfolio on the same score: five shares, each kept while it stays among
-   the ``KEEP_RANK`` best and sold only when it drops out, so a good share is not sold and
-   bought back (paying the round trip again) just because a fixed holding period ended.
+4. A monthly portfolio on the same score: five shares, reviewed only at the end of each
+   Jalali month; a share is kept while it stays among the ``KEEP_RANK`` best, so a good share
+   is not sold and bought back (paying the round trip again) just because a period ended.
 
 A fact is chosen only if its training-period correlation has |t| ≥ ``PASS_T`` and the same
 sign in both halves of the training period (an effect that flipped once is likely to flip again).
@@ -56,7 +56,7 @@ from .common import SymbolData
 
 HORIZONS = (1, 2, 5, 10, 20)
 TOP_K = 5
-KEEP_RANK = 20  # the low-turnover portfolio sells a share only below this rank
+KEEP_RANK = 20  # the monthly portfolio sells a share only below this rank
 TRAIN_SHARE = 0.7
 MIN_NAMES = 20  # shares on a day for a cross-sectional comparison
 MIN_DAYS = 250  # training days for a fact to be judged
@@ -199,7 +199,7 @@ def symbol_panel(sym: SymbolData, calendar: pd.DatetimeIndex, limits: pd.DataFra
                 ret = lastv[np.minimum(exit_row, n - 1)] / entry * NET - 1
             f[f"{kind}{h}"] = np.where(done, ret, np.nan)
             f[f"{kind}{h}_exit"] = np.where(done, pos[np.minimum(exit_row, n - 1)], -1)
-    f["price"] = lastv  # for valuing the low-turnover portfolio
+    f["price"] = lastv  # for valuing the monthly portfolio
     f["pos"] = pos
     floats = [c for c in f.columns if f[c].dtype == np.float64 and c not in ("net_value", "flow_value", "price")]
     f[floats] = f[floats].astype(np.float32)  # half the memory on a few hundred shares x 20 years
@@ -280,6 +280,7 @@ class ShortTerm:
     targets: dict = dc_field(default_factory=dict)  # key -> per-target results
     weekday: list = dc_field(default_factory=list)
     market_flow: dict = dc_field(default_factory=dict)
+    data_checks: dict = dc_field(default_factory=dict)
     picks: pd.DataFrame | None = dc_field(default=None, repr=False)
 
     def results(self) -> list[tuple[str, dict]]:
@@ -289,7 +290,7 @@ class ShortTerm:
             if t.get("monthly", {}).get("months"):
                 out.append((f"۵ سهم برتر هر روز، {t['label']}", t["monthly"]))
             if t.get("hold", {}).get("months"):
-                out.append((f"سبد کم‌گردش با امتیاز «{t['label']}»", t["hold"]))
+                out.append((f"سبد ماهانه با امتیاز «{t['label']}»", t["hold"]))
         return out
 
     def best(self) -> tuple[str, dict] | None:
@@ -301,14 +302,15 @@ class ShortTerm:
         return {"horizons": list(self.horizons), "symbols": self.symbols, "days": self.days, "from": self.first,
                 "to": self.last, "test_from": self.split, "inflation": self.inflation,
                 "round_trip_cost_pct": ROUND_TRIP_PCT, "targets": self.targets, "weekday": self.weekday,
-                "market_flow": self.market_flow}
+                "market_flow": self.market_flow, "data_checks": self.data_checks}
 
 
 def run(universe: list[SymbolData], index: pd.Series | None = None, horizons=HORIZONS, top_k: int = TOP_K,
         inflation: float = INFLATION, progress=None) -> ShortTerm:
-    panel, calendar, _ = build_panel(universe, horizons)
+    panel, calendar, limits = build_panel(universe, horizons)
     if panel.empty:
         return ShortTerm(tuple(horizons), len(universe), 0, "", "", "", inflation)
+    checks = data_checks(panel, limits)
     counts = panel.dropna(subset=[f"c{horizons[0]}"]).groupby("date").size()
     days = counts[counts >= MIN_NAMES].index.sort_values()
     if len(days) < 2 * MIN_DAYS:
@@ -319,7 +321,7 @@ def run(universe: list[SymbolData], index: pd.Series | None = None, horizons=HOR
     train_mask = panel["date"] < gap_start
     test_mask = panel["date"] >= split
     result = ShortTerm(tuple(horizons), int(panel["symbol"].nunique()), len(days), days[0].strftime("%Y-%m-%d"),
-                       days[-1].strftime("%Y-%m-%d"), split.strftime("%Y-%m-%d"), inflation)
+                       days[-1].strftime("%Y-%m-%d"), split.strftime("%Y-%m-%d"), inflation, data_checks=checks)
     index = index.sort_index() if index is not None and len(index) else None
     all_picks = []
     plan = targets(horizons)
@@ -505,15 +507,21 @@ def _curve_stats(curve: pd.Series, index: pd.Series | None, inflation: float) ->
 
 def hold_while_ranked(scored: pd.DataFrame, index: pd.Series | None, inflation: float = INFLATION,
                       top_k: int = TOP_K, keep: int = KEEP_RANK) -> dict:
-    """A five-share portfolio that trades only when it must, valued every session.
+    """A five-share portfolio that changes only at the end of each Jalali month, valued every session.
 
-    At each close: a share that fell below rank ``keep`` (or lost its score) is sold at the last
-    price, unless it sits in a sell queue (then it waits); free money buys the best-ranked
-    shares among the top ``top_k`` that are not held and not in a buy queue, in equal parts.
-    A halted share keeps its last price until it trades again. Fees on every trade; cash earns
-    nothing.
+    On the last session of a month: a share that fell below rank ``keep`` (or lost its score) is
+    sold at the last price, and the money buys the best-ranked shares among the top ``top_k``
+    that are not held and not in a buy queue, in equal parts. A share caught in a sell queue
+    (or halted) is sold on the first session it can be, and its money is reinvested that day.
+    Fees on every trade; cash earns nothing.
+
+    (Trading every session on a score that changes every session churned the portfolio every
+    three or four sessions on the real market: bought after a rise, sold after a fall, a round
+    trip of fees each time.)
     """
-    curve, trades, held, sales = hold_curve(scored, top_k, keep)
+    days = pd.DatetimeIndex(sorted(scored["date"].unique()))
+    ends = {days[i] for i in month_end_positions(days)}
+    curve, trades, held, sales = hold_curve(scored, top_k, keep, rebalance=ends)
     if curve.empty:
         return {"months": 0}
     out = _curve_stats(curve, index, inflation)
@@ -523,29 +531,46 @@ def hold_while_ranked(scored: pd.DataFrame, index: pd.Series | None, inflation: 
     return out
 
 
-def hold_curve(scored: pd.DataFrame, top_k: int = TOP_K, keep: int = KEEP_RANK) -> tuple[pd.Series, int, int, int]:
-    """Value of the low-turnover portfolio at every close, the number of trades, the sessions the
-    sold shares were held in total, and the number of sales (see :func:`hold_while_ranked`)."""
+def month_end_positions(days: pd.DatetimeIndex) -> list[int]:
+    """Positions of the last session of each Jalali month (the final, unfinished month included)."""
+    keys = [gregorian_to_jalali(d.year, d.month, d.day)[:2] for d in days]
+    return [i for i in range(len(keys)) if i == len(keys) - 1 or keys[i] != keys[i + 1]]
+
+
+def hold_curve(scored: pd.DataFrame, top_k: int = TOP_K, keep: int = KEEP_RANK,
+               rebalance: set | None = None) -> tuple[pd.Series, int, int, int]:
+    """Value of the ranked portfolio at every close, the number of trades, the sessions the sold
+    shares were held in total, and the number of sales.
+
+    ``rebalance``: the sessions on which the portfolio is reviewed (None: every session). A share
+    marked for sale but in a sell queue or halted is sold on the first session it can be.
+    """
     scored = scored.drop_duplicates(["date", "symbol"])
     days = sorted(scored["date"].unique())
     if not days:
         return pd.Series(dtype=float), 0, 0, 0
-    by_day = {d: g.set_index("symbol") for d, g in scored.groupby("date")}
-    cash, holdings, prices, bought_at = 1.0, {}, {}, {}
+    by_day = {pd.Timestamp(d): g.set_index("symbol") for d, g in scored.groupby("date")}
+    cash, holdings, prices, bought_at, leaving = 1.0, {}, {}, {}, set()
     trades, held_sessions, sales = 0, 0, 0
     curve = []
     for k, day in enumerate(days):
+        day = pd.Timestamp(day)
         g = by_day[day]
         prices.update(g["price"].dropna().to_dict())
         rank = g["score"].rank(ascending=False, method="first")
-        for sym in list(holdings):
+        review = rebalance is None or day in rebalance
+        if review:
+            leaving |= {sym for sym in holdings if sym in g.index and (pd.isna(rank.get(sym)) or rank[sym] > keep)}
+        sold_today = False
+        for sym in list(leaving):
             if sym not in g.index or g.at[sym, "down_limit"] >= 1:
-                continue  # halted, or in a sell queue: cannot sell today
-            if pd.isna(rank.get(sym)) or rank[sym] > keep:
-                cash += holdings.pop(sym) * prices[sym] * (1 - SELL_FEE)
-                trades, sales, held_sessions = trades + 1, sales + 1, held_sessions + k - bought_at.pop(sym)
+                continue  # halted, or in a sell queue: try again next session
+            cash += holdings.pop(sym) * prices[sym] * (1 - SELL_FEE)
+            leaving.discard(sym)
+            trades, sales, held_sessions = trades + 1, sales + 1, held_sessions + k - bought_at.pop(sym)
+            sold_today = True
         free = top_k - len(holdings)
-        if free > 0 and cash > 1e-12:
+        if free > 0 and cash > 1e-12 and (review or sold_today):
             buyable = g[(rank <= top_k) & (g["up_limit"] < 1) & (g["price"] > 0) & ~g.index.isin(list(holdings))]
             names = list(buyable.assign(r=rank).sort_values("r").index[:free])
             if names:
@@ -557,6 +582,26 @@ def hold_curve(scored: pd.DataFrame, top_k: int = TOP_K, keep: int = KEEP_RANK) 
                     trades += 1
         curve.append(cash + sum(q * prices[s] for s, q in holdings.items()))
     return pd.Series(curve, index=pd.DatetimeIndex(days)), trades, held_sessions, sales
+
+
+def data_checks(panel: pd.DataFrame, limits: pd.DataFrame, margin: float = 0.03) -> dict:
+    """Moves from one session to the next beyond that day's price limit (by more than ``margin``).
+
+    A share reopening after a halt may legitimately move further, so only consecutive sessions
+    count. A handful is normal (auctions, corrections); many would point at price records or
+    capital-increase adjustments the data got wrong, and the results should be read with care.
+    """
+    p = panel[["symbol", "date", "pos", "ret_1d"]].copy()
+    p["gap"] = p.groupby("symbol")["pos"].diff()
+    lim = limits.reindex(pd.DatetimeIndex(p["date"])).ffill().fillna({"up": DEFAULT_LIMIT, "dn": -DEFAULT_LIMIT})
+    move = p["ret_1d"].astype(float).to_numpy()
+    beyond = (p["gap"].to_numpy() == 1) & ((move > lim["up"].to_numpy() + margin) | (move < lim["dn"].to_numpy() - margin))
+    rows = p[beyond].assign(size=np.abs(move[beyond])).sort_values("size", ascending=False)
+    consecutive = int((p["gap"] == 1).sum())
+    return {"sessions": consecutive, "beyond": int(beyond.sum()), "symbols": int(rows["symbol"].nunique()),
+            "share": float(beyond.sum() / consecutive) if consecutive else None,
+            "examples": [{"symbol": r.symbol, "date": jalali_str(r.date), "move_pct": float(r.ret_1d * 100)}
+                         for r in rows.head(10).itertuples()]}
 
 
 def weekday_effect(panel: pd.DataFrame, key: str) -> list[dict]:
@@ -634,9 +679,14 @@ def summary_lines(st: ShortTerm) -> list[str]:
                      + (f"؛ ماهانه {_pct(m['avg_pct'])}، ماه منفی {_p(m['loss_share'])}" if m.get("months") else ""))
     holds = [(t["label"], t["hold"]) for t in st.targets.values() if t.get("hold", {}).get("months")]
     if holds:
-        lines.append(f"   ب) سبد {TOP_K} سهمی کم‌گردش (فروش فقط وقتی سهم از {KEEP_RANK} سهم برتر بیرون برود):")
+        lines.append(f"   ب) سبد {TOP_K} سهمی ماهانه (بررسی فقط در پایان هر ماه؛ سهمی که هنوز در {KEEP_RANK} سهم برتر است می‌ماند):")
         for label, m in holds:
             lines.append(f"     • امتیازِ «{label}»: {_month_line(m)}؛ {m.get('trades_per_month', 0):.0f} معامله در ماه")
+    dc = st.data_checks
+    if dc.get("sessions"):
+        lines.append(f"   کیفیت داده: {dc['beyond']} مورد حرکت بیش از دامنه‌ی نوسان در {dc['sessions']} جلسه‌ی پشت‌سرهم "
+                     f"({dc['share'] * 100:.2f}٪، در {dc['symbols']} نماد)" + ("؛ قابل چشم‌پوشی." if dc["share"] < 0.001
+                                                                              else "؛ نتایج را با احتیاط بخوانید."))
     best = st.best()
     if best:
         label, m = best
@@ -681,7 +731,7 @@ def report_text(st: ShortTerm) -> str:
             lines.append("  دهک‌های امتیاز (۱۰ = بهترین): " + "  ".join(
                 f"{d['decile']}: {_pct(d['avg_pct'], 2)}/{_p(d['win'])}" for d in t["deciles"]))
         for title, m in (("با امتیاز", t.get("monthly")), ("خرید تصادفی", t.get("monthly_random")),
-                         (f"سبد کم‌گردش (نگه‌داری تا رتبه‌ی {KEEP_RANK})", t.get("hold"))):
+                         (f"سبد ماهانه (بررسی در پایان ماه، نگه‌داری تا رتبه‌ی {KEEP_RANK})", t.get("hold"))):
             if m and m.get("months"):
                 extra = ""
                 if m.get("trades_per_month") is not None:
@@ -701,6 +751,10 @@ def report_text(st: ShortTerm) -> str:
         lines.append(f"ورود پول حقیقی کل بازار امروز و معامله‌ی یک‌جلسه‌ای: همبستگی {mf['corr']:+.2f} (t={_t(mf['t'])})؛ "
                      f"بعد از ۲۰٪ روزهای پرورود {_pct(mf['after_inflow_pct'], 2)}، بعد از ۲۰٪ روزهای پرخروج "
                      f"{_pct(mf['after_outflow_pct'], 2)}، همه‌ی روزها {_pct(mf['all_pct'], 2)}.")
+    dc = st.data_checks
+    if dc.get("examples"):
+        lines.append("بزرگ‌ترین حرکت‌های بیش از دامنه (جلسه‌های پشت‌سرهم): " + "، ".join(
+            f"{e['symbol']} {e['date']} {_pct(e['move_pct'], 0)}" for e in dc["examples"]))
     lines += ["", "محدودیت‌ها: فقط نمادهایی که امروز پرمعامله‌اند بررسی شده‌اند (نتیجه کمی خوش‌بینانه است)؛ روش «آخرین قیمت "
               "امروز» فرض می‌کند در دقایق پایانی بازار به همان قیمت می‌شد خرید و آمار حقیقی/حقوقی و قیمت پایانی همان روز تقریباً "
               "معلوم بود (روش «قیمت اولیه‌ی فردا» این فرض را ندارد)؛ عمق صف و حجم قابل معامله دیده نمی‌شود؛ گذشته تضمین آینده نیست."]
